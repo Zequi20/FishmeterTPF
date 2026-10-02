@@ -1,29 +1,36 @@
-# Plantilla de configuración. Complete y mida estos valores antes de experimentar.
-# La aplicación inicial no carga este archivo.
+# Configuración de ejemplo para A y A′. Los valores físicos deben verificarse con
+# mediciones del montaje real antes de usarlos en un experimento.
 experiment:
-  name: null  # Identificación legible del experimento.
-  identifier: null  # Código único del experimento.
-  working_units: mm  # Unidad de trabajo; confirme que las referencias usan mm.
+  name: "A_A_prime_pilot"
+  units: "mm"
 
 aruco:
-  dictionary: null  # Ejemplo futuro: DICT_4X4_50.
-  glass_marker_id: null  # ID del ArUco fijado al vidrio (método A).
-  fish_plane_marker_id: null  # ID del ArUco coplanar con la réplica (método A′).
-  glass_marker_size_mm: null  # Tamaño físico medido del marcador del vidrio.
-  fish_plane_marker_size_mm: null  # Tamaño físico medido del marcador coplanar.
+  dictionary: "DICT_4X4_50"
+  method_a:
+    id: 10
+    side_mm: 30.0  # Sustituya por la medida real con calibre.
+    role: "glass"
+    plane: "glass_inner_surface"
+  method_a_prime:
+    id: 11
+    side_mm: 30.0  # Sustituya por la medida real con calibre.
+    role: "coplanar"
+    plane: "replica_symmetry_plane"
+    coplanarity_error_mm: 0.0  # Registre aquí la medición física real.
 
-rail:
-  positions_mm: null  # Lista de posiciones medidas del carrito sobre el rail.
-  reference_origin_mm: null  # Origen físico elegido para esas posiciones.
+measurements:
+  use_same_points_for_all_methods: true
+  total_length:
+    start: "p1"
+    end: "p2"
+  body_depth:
+    start: "p3"
+    end: "p4"
 
-calibration:
-  method_b_distance_mm: null  # Distancia de calibración bajo agua para B.
+quality:
+  minimum_marker_side_px: 30
+  maximum_side_cv: 0.10
 
 paths:
-  images: null  # Ruta a imágenes del experimento.
+  images: null  # Ruta opcional a las imágenes del ensayo.
   annotations: null  # Ruta futura para puntos anatómicos.
-  physical_references: null  # Ruta a referencias físicas documentadas.
-  calibration_air: null  # Archivo o carpeta de calibración en aire para C.
-  calibration_water_pinhole: null  # Archivo o carpeta de calibración pinhole para B.
-  calibration_flatport: null  # Parámetros FLATPORT para C.
-

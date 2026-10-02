@@ -14,6 +14,7 @@ htmlcov/
 data/raw/*
 data/annotations/*
 data/references/*
+data/results/*
 calibrations/air/*
 calibrations/water_pinhole/*
 calibrations/flatport/*
@@ -21,8 +22,8 @@ results/*
 !data/raw/.gitkeep
 !data/annotations/.gitkeep
 !data/references/.gitkeep
+!data/results/.gitkeep
 !calibrations/air/.gitkeep
 !calibrations/water_pinhole/.gitkeep
 !calibrations/flatport/.gitkeep
 !results/.gitkeep
-

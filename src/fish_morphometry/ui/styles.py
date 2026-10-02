@@ -48,6 +48,24 @@ def configure_styles(root: tk.Misc) -> None:
         font=("TkDefaultFont", 9),
     )
     style.configure(
+        "Input.TLabel",
+        background="#ffffff",
+        foreground="#334e68",
+        font=("TkDefaultFont", 9),
+    )
+    style.configure(
+        "Muted.TLabel",
+        background="#f4f7fb",
+        foreground="#627d98",
+        font=("TkDefaultFont", 9),
+    )
+    style.configure(
+        "CardMuted.TLabel",
+        background="#ffffff",
+        foreground="#627d98",
+        font=("TkDefaultFont", 9),
+    )
+    style.configure(
         "Status.TLabel",
         background="#fff5dc",
         foreground="#835b00",
@@ -69,4 +87,4 @@ def configure_styles(root: tk.Misc) -> None:
         foreground=[("disabled", "#7b8794")],
         background=[("disabled", "#edf1f5")],
     )
-
+    style.configure("Treeview.Heading", font=("TkDefaultFont", 9, "bold"))

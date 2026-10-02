@@ -16,13 +16,20 @@ def run() -> None:
         root = tk.Tk()
         MainWindow(root)
         root.mainloop()
-    except ModuleNotFoundError as exc:
-        if exc.name not in {"tkinter", "_tkinter"}:
+    except (ModuleNotFoundError, ImportError) as exc:
+        missing_name = getattr(exc, "name", None)
+        if missing_name in {"tkinter", "_tkinter"} or "_tkinter" in str(exc):
+            message = (
+                "No se pudo iniciar la interfaz gráfica porque Tkinter no está instalado. "
+                "En Ubuntu instálelo con: sudo apt install python3-tk"
+            )
+        elif missing_name in {"cv2", "numpy"}:
+            message = (
+                f"Falta la dependencia de Python '{missing_name}'. "
+                "Active el venv y ejecute: python -m pip install -e ."
+            )
+        else:
             raise
-        message = (
-            "No se pudo iniciar la interfaz gráfica porque Tkinter no está instalado. "
-            "En Ubuntu instálelo con: sudo apt install python3-tk"
-        )
         print(message, file=sys.stderr)
         raise SystemExit(1) from exc
     except tk.TclError as exc:

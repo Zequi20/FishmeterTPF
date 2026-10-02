@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "fish-morphometry"
 version = "0.1.0"
-description = "Estructura inicial para un experimento de morfometría de peces"
+description = "Herramienta de medición morfométrica directa para los métodos A y A′"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -14,7 +14,7 @@ authors = [
 ]
 dependencies = [
   "numpy>=1.24",
-  "opencv-python>=4.8",
+  "opencv-contrib-python>=4.8",
   "PyYAML>=6.0",
 ]
 
@@ -29,4 +29,3 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-
