@@ -1,0 +1,29 @@
+# Plantilla de configuración. Complete y mida estos valores antes de experimentar.
+# La aplicación inicial no carga este archivo.
+experiment:
+  name: null  # Identificación legible del experimento.
+  identifier: null  # Código único del experimento.
+  working_units: mm  # Unidad de trabajo; confirme que las referencias usan mm.
+
+aruco:
+  dictionary: null  # Ejemplo futuro: DICT_4X4_50.
+  glass_marker_id: null  # ID del ArUco fijado al vidrio (método A).
+  fish_plane_marker_id: null  # ID del ArUco coplanar con la réplica (método A′).
+  glass_marker_size_mm: null  # Tamaño físico medido del marcador del vidrio.
+  fish_plane_marker_size_mm: null  # Tamaño físico medido del marcador coplanar.
+
+rail:
+  positions_mm: null  # Lista de posiciones medidas del carrito sobre el rail.
+  reference_origin_mm: null  # Origen físico elegido para esas posiciones.
+
+calibration:
+  method_b_distance_mm: null  # Distancia de calibración bajo agua para B.
+
+paths:
+  images: null  # Ruta a imágenes del experimento.
+  annotations: null  # Ruta futura para puntos anatómicos.
+  physical_references: null  # Ruta a referencias físicas documentadas.
+  calibration_air: null  # Archivo o carpeta de calibración en aire para C.
+  calibration_water_pinhole: null  # Archivo o carpeta de calibración pinhole para B.
+  calibration_flatport: null  # Parámetros FLATPORT para C.
+

@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fish-morphometry"
+version = "0.1.0"
+description = "Estructura inicial para un experimento de morfometría de peces"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+  { name = "Equipo Fish Morphometry" },
+]
+dependencies = [
+  "numpy>=1.24",
+  "opencv-python>=4.8",
+  "PyYAML>=6.0",
+]
+
+[project.scripts]
+fish-morphometry = "fish_morphometry.app:run"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
