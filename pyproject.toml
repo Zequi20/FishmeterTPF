@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "fish-morphometry"
 version = "0.1.0"
-description = "Herramienta de medición morfométrica directa para los métodos A y A′"
+description = "Herramienta de medición morfométrica para los métodos A, A′, B y C"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }

@@ -31,6 +31,27 @@ quality:
   minimum_marker_side_px: 30
   maximum_side_cv: 0.10
 
+# Método B se configura desde la pantalla o sus APIs, después de aportar datos
+# físicos del montaje. No se rellenan valores ficticios en este ejemplo:
+# method_b:
+#   calibration_profile: null       # YAML nativo B o calibration.yaml de Calibmar pinhole.
+#   rail_reference: null            # Captura específica en z_ref_mm y pose solvePnP.
+#   z_ref_mm: null                 # Posición real de la zona más cercana al vidrio.
+#   replica_plane_offset_mm: null  # Medición física firmada respecto del tablero.
+#   rail_direction_camera: null    # Vector medido/validado, no distancia pez–vidrio.
+
+# Método C se configura desde la pestaña C o sus APIs. Declare explícitamente
+# las unidades y complete únicamente con mediciones del montaje real:
+# method_c:
+#   air_calibration_profile: null  # Perfil nativo air_calibration.v1 o Calibmar FLATPORT.
+#   flat_port_yaml: null           # flat_port.units debe ser "mm".
+#   measurement_plane_yaml: null   # point_camera_mm + normal_camera.
+#   interface_distance_mm: null    # Centro de proyección → primera interfaz.
+#   glass_thickness_mm: null
+#   n_air: 1.000
+#   n_glass: null
+#   n_water: null                  # Depende de temperatura/salinidad.
+
 paths:
   images: null  # Ruta opcional a las imágenes del ensayo.
   annotations: null  # Ruta futura para puntos anatómicos.
