@@ -18,6 +18,7 @@ def test_json_csv_export_is_consistent_and_keeps_failure_reason(
     payload = json.loads(paths["C"].read_text(encoding="utf-8"))
     assert payload["image_id"] == "export-image"
     assert payload["points_source"] == "shared_annotation"
+    assert payload["body_depth_selection"] is None
     assert payload["quality"]["status"] == "ERROR"
     assert payload["exclusion_reason"]
     with paths["master"].open(encoding="utf-8", newline="") as stream:
@@ -29,6 +30,12 @@ def test_json_csv_export_is_consistent_and_keeps_failure_reason(
     assert direct_rows["A_PRIME"]["metric_transform"] == "planar_homography"
     assert direct_rows["A_PRIME"]["longitudinal_axis_metric"]
     assert direct_rows["A_PRIME"]["points_metric_mm"]
+    assert direct_rows["A"]["body_depth_selection"] == (
+        "manual_section_not_automatically_verified_global_max"
+    )
+    assert direct_rows["A_PRIME"]["body_depth_selection"] == (
+        "manual_section_not_automatically_verified_global_max"
+    )
 
 
 def test_export_does_not_overwrite_other_image(tmp_path, points_px, image_shape, marker_glass):

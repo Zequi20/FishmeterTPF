@@ -44,6 +44,11 @@ from ..geometry.refractive_port import (
     make_measurement_plane,
 )
 from ..io.exporters import export_b_result, export_c_result, export_method_results, export_results_csv
+from ..measurements.depth_guidance import (
+    DepthCandidate,
+    depth_separation_px,
+    section_angle_degrees,
+)
 from ..measurements.points import load_points_json, save_points_json
 from ..measurements.quality import MeasurementError
 from ..methods.a import measure_a
@@ -95,6 +100,11 @@ class MainWindow:
         self.image_path: Path | None = None
         self.markers: tuple[MarkerObservation, ...] = ()
         self.points: dict[str, Point] = {}
+        self.depth_candidates: list[DepthCandidate] = []
+        self.depth_section_review_required = False
+        self._selection_points_backup: dict[str, Point] = {}
+        self._selection_review_backup = False
+        self._last_longitudinal_axis: Point = (1.0, 0.0)
         self.result_a: MeasurementResult | None = None
         self.result_a_prime: MeasurementResult | None = None
         self.result_b: BMeasurementResult | None = None
@@ -171,8 +181,11 @@ class MainWindow:
         self.status_var = tk.StringVar(value="Cargue una imagen para comenzar.")
         self.marker_status_var = tk.StringVar(value="No hay marcadores detectados.")
         self.points_status_var = tk.StringVar(value="No hay puntos anatómicos cargados.")
+        self.depth_candidate_var = tk.StringVar(value="")
+        self.depth_candidate_status_var = tk.StringVar(value="Sin candidatas guardadas.")
 
         self._build()
+        self.axis_angle_var.trace_add("write", self._on_axis_angle_changed)
         self._refresh_calculate_states()
 
     def _build(self) -> None:
@@ -209,7 +222,10 @@ class MainWindow:
         self.image_panel.grid(row=1, column=0, sticky="nsew")
         ttk.Label(
             left,
-            text="p1 hocico · p2 extremo posterior · p3/p4 profundidad corporal máxima",
+            text=(
+                "p1 hocico · p2 extremo posterior · "
+                "p3/p4 sección de profundidad elegida manualmente"
+            ),
             style="Muted.TLabel",
         ).grid(row=2, column=0, sticky="w", pady=(7, 0))
 
@@ -339,6 +355,41 @@ class MainWindow:
         ttk.Label(card, textvariable=self.points_status_var, style="CardMuted.TLabel").grid(
             row=1, column=5, sticky="w", pady=(9, 0), padx=(8, 0)
         )
+
+        self.depth_points_button = ttk.Button(
+            card,
+            text="Marcar/remarcar profundidad",
+            style="Action.TButton",
+            command=self._select_depth_points,
+        )
+        self.depth_points_button.grid(row=2, column=0, columnspan=2, sticky="w", pady=(9, 0))
+        self.save_depth_candidate_button = ttk.Button(
+            card,
+            text="Guardar candidata",
+            style="Action.TButton",
+            command=self._save_depth_candidate,
+        )
+        self.save_depth_candidate_button.grid(row=2, column=2, sticky="w", pady=(9, 0), padx=(8, 0))
+        self.depth_candidate_combo = ttk.Combobox(
+            card,
+            textvariable=self.depth_candidate_var,
+            values=(),
+            state="disabled",
+            width=22,
+        )
+        self.depth_candidate_combo.grid(row=2, column=3, sticky="w", pady=(9, 0), padx=(8, 0))
+        self.use_depth_candidate_button = ttk.Button(
+            card,
+            text="Usar candidata",
+            style="Action.TButton",
+            command=self._use_depth_candidate,
+        )
+        self.use_depth_candidate_button.grid(row=2, column=4, sticky="w", pady=(9, 0), padx=(8, 0))
+        ttk.Label(
+            card,
+            textvariable=self.depth_candidate_status_var,
+            style="CardMuted.TLabel",
+        ).grid(row=2, column=5, sticky="w", pady=(9, 0), padx=(8, 0))
         return card
 
     def _build_method_card(self, parent: ttk.Frame, label: str, description: str, role: str) -> ttk.Frame:
@@ -442,6 +493,46 @@ class MainWindow:
         radians = math.radians(angle)
         return (math.cos(radians), math.sin(radians)), tolerance
 
+    def _invalidate_measurement_results(self) -> None:
+        """Descarta resultados calculados con puntos o ejes que ya cambiaron."""
+
+        self.result_a = None
+        self.result_a_prime = None
+        self.result_b = None
+        self.result_c = None
+        if hasattr(self, "results_panel"):
+            self.results_panel.clear()
+
+    def _on_axis_angle_changed(self, *_args: object) -> None:
+        """Exige remarcar p3/p4 cuando cambia el eje; nunca los corrige solo."""
+
+        try:
+            angle = float(self.axis_angle_var.get())
+        except (TypeError, ValueError):
+            return
+        if not math.isfinite(angle):
+            return
+        radians = math.radians(angle)
+        axis = (math.cos(radians), math.sin(radians))
+        if all(
+            math.isclose(axis[index], self._last_longitudinal_axis[index], abs_tol=1e-12)
+            for index in range(2)
+        ):
+            return
+        self._last_longitudinal_axis = axis
+        has_depth = "p3" in self.points and "p4" in self.points
+        self.image_panel.set_longitudinal_axis(axis, require_depth_review=has_depth)
+        if has_depth:
+            self.depth_section_review_required = True
+            self._invalidate_measurement_results()
+            self.points_status_var.set(
+                "El eje cambió: p3/p4 requieren remarcación sobre la nueva perpendicular."
+            )
+            self.status_var.set(
+                "Los puntos anteriores se conservaron como referencia, pero no se calculará hasta remarcarlos."
+            )
+        self._refresh_depth_candidate_controls()
+
     def _build_b_card(self, parent: ttk.Frame) -> ttk.Frame:
         """Panel del flujo B: perfil, referencia, posición y exportación."""
 
@@ -536,9 +627,9 @@ class MainWindow:
             ttk.Label(direction, text=axis, style="Input.TLabel").grid(
                 row=0, column=label_column, sticky="e", padx=(0, 3)
             )
-            ttk.Entry(direction, textvariable=variable, width=7).grid(
-                row=0, column=entry_column, sticky="ew", padx=(0, 5), state="readonly"
-            )
+            ttk.Entry(
+                direction, textvariable=variable, width=7, state="readonly"
+            ).grid(row=0, column=entry_column, sticky="ew", padx=(0, 5))
         ttk.Label(card, text="Sentido positivo", style="Input.TLabel").grid(
             row=12, column=0, sticky="w", pady=(5, 0), padx=(0, 5)
         )
@@ -1420,6 +1511,9 @@ class MainWindow:
         if self.c_air_profile is None or self.c_flat_port is None or self.c_measurement_plane is None or len(self.points) != 4:
             self._show_error("Complete perfil de aire, puerto, plano y p1–p4 antes de ejecutar sensibilidad C.")
             return
+        if self.depth_section_review_required:
+            self._show_error("Confirme o remarque p3/p4 antes de ejecutar sensibilidad C.")
+            return
         if self.image_path is None:
             self._show_error("Cargue una imagen antes de ejecutar sensibilidad C.")
             return
@@ -1458,6 +1552,8 @@ class MainWindow:
             missing.append("plano de medición")
         if len(self.points) != 4:
             missing.append("puntos p1–p4")
+        elif self.depth_section_review_required:
+            missing.append("revisión manual de p3–p4")
         if self.c_units_var.get().strip().lower() not in {"mm", "millimeter", "millimeters"}:
             missing.append("unidades internas en mm")
         if self.c_air_profile is not None and self.image_bgr is not None:
@@ -1487,11 +1583,14 @@ class MainWindow:
         self.image_bgr = image
         self.markers = ()
         self.points = {}
+        self.depth_candidates = []
+        self.depth_section_review_required = False
         self.result_a = None
         self.result_a_prime = None
         self.result_b = None
         self.result_c = None
         self.image_panel.set_image(image)
+        self._refresh_depth_candidate_controls()
         self.results_panel.clear()
         self.marker_status_var.set("No hay marcadores detectados.")
         self.points_status_var.set(f"Imagen {image.shape[1]}×{image.shape[0]} px; faltan p1–p4.")
@@ -1528,27 +1627,207 @@ class MainWindow:
             return
         try:
             self.points = load_points_json(path, self.image_bgr.shape)
+            longitudinal_axis, _tolerance = self._direct_morphometry_parameters()
         except MeasurementError as exc:
             self._show_error(str(exc))
             return
+        except ValueError as exc:
+            self._show_error(str(exc))
+            return
+        self.depth_candidates = []
+        self._invalidate_measurement_results()
+        angle = section_angle_degrees(
+            self.points["p3"], self.points["p4"], longitudinal_axis
+        )
+        # Los puntos heredados deben pertenecer realmente a la misma
+        # perpendicular. La tolerancia morfométrica no se usa para corregir ni
+        # aceptar silenciosamente una marcación manual desplazada.
+        self.depth_section_review_required = angle > 1e-6
+        self.image_panel.stop_point_selection()
+        self.image_panel.set_longitudinal_axis(longitudinal_axis)
         self.image_panel.set_points(self.points)
-        self.points_status_var.set("Puntos p1–p4 cargados en coordenadas originales.")
-        self.status_var.set(f"Puntos cargados: {Path(path).name}.")
+        if self.depth_section_review_required:
+            self.image_panel.mark_depth_review_required()
+            self.points_status_var.set(
+                f"p3–p4 cargados con desvío {angle:.2f}°; deben remarcarse sobre la guía."
+            )
+            self.status_var.set(
+                "Los puntos antiguos no se corrigieron: remarque la profundidad antes de calcular."
+            )
+        else:
+            self.image_panel.clear_depth_review_required()
+            self.points_status_var.set("Puntos p1–p4 cargados en coordenadas originales.")
+            self.status_var.set(f"Puntos cargados: {Path(path).name}.")
+        self._refresh_depth_candidate_controls()
         self._refresh_calculate_states()
 
     def _select_points(self) -> None:
         if self.image_bgr is None:
             self._show_error("Cargue una imagen antes de seleccionar puntos.")
             return
+        try:
+            longitudinal_axis, _tolerance = self._direct_morphometry_parameters()
+        except (MeasurementError, ValueError) as exc:
+            self._show_error(str(exc))
+            return
+        self._selection_points_backup = dict(self.points)
+        self._selection_review_backup = self.depth_section_review_required
         self.points = {}
-        self.points_status_var.set("Seleccione p1, p2, p3 y p4 en ese orden sobre la imagen.")
-        self.status_var.set("Selección manual activa; se conservará la resolución original.")
-        self.image_panel.start_point_selection(self._on_point_selected)
+        self.depth_candidates = []
+        self.depth_section_review_required = True
+        self._invalidate_measurement_results()
+        self.points_status_var.set(
+            "Seleccione p1 y p2; p3/p4 se marcarán con la guía perpendicular."
+        )
+        self.status_var.set("Selección manual activa en coordenadas de la imagen original.")
+        self.image_panel.start_point_selection(
+            self._on_point_selected,
+            longitudinal_axis=longitudinal_axis,
+            cancel_callback=self._on_selection_cancelled,
+        )
+        self._refresh_depth_candidate_controls()
+        self._refresh_calculate_states()
+
+    def _select_depth_points(self) -> None:
+        if self.image_bgr is None:
+            self._show_error("Cargue una imagen antes de marcar la profundidad.")
+            return
+        if "p1" not in self.points or "p2" not in self.points:
+            self._show_error("Seleccione primero p1 y p2 con el flujo manual completo.")
+            return
+        try:
+            longitudinal_axis, _tolerance = self._direct_morphometry_parameters()
+        except (MeasurementError, ValueError) as exc:
+            self._show_error(str(exc))
+            return
+        self._selection_points_backup = dict(self.points)
+        self._selection_review_backup = self.depth_section_review_required
+        self.points.pop("p3", None)
+        self.points.pop("p4", None)
+        self.depth_section_review_required = True
+        self._invalidate_measurement_results()
+        self.points_status_var.set("Elige una sección candidata y marca el perfil dorsal.")
+        self.status_var.set("La guía perpendicular seguirá al cursor hasta fijar p3.")
+        self.image_panel.start_depth_selection(
+            self._on_point_selected,
+            longitudinal_axis=longitudinal_axis,
+            cancel_callback=self._on_selection_cancelled,
+        )
+        self._refresh_calculate_states()
+
+    def _on_selection_cancelled(self, restored_points: Mapping[str, Point]) -> None:
+        self.points = dict(self._selection_points_backup or restored_points)
+        self.depth_section_review_required = self._selection_review_backup
+        self.image_panel.set_points(self.points)
+        if self.depth_section_review_required:
+            self.image_panel.mark_depth_review_required()
+        else:
+            self.image_panel.clear_depth_review_required()
+        self.points_status_var.set(
+            "Marcación cancelada; se restauraron los puntos anteriores."
+        )
+        self.status_var.set("No se modificó la sección confirmada anteriormente.")
+        self._refresh_calculate_states()
+
+    def _save_depth_candidate(self) -> None:
+        if self.depth_section_review_required or not all(
+            name in self.points for name in ("p3", "p4")
+        ):
+            self._show_error("Confirme primero una sección p3–p4 sobre la guía.")
+            return
+        try:
+            axis, _tolerance = self._direct_morphometry_parameters()
+            candidate = DepthCandidate(self.points["p3"], self.points["p4"], axis)
+        except (MeasurementError, ValueError) as exc:
+            self._show_error(str(exc))
+            return
+        matching_index = next(
+            (
+                index
+                for index, existing in enumerate(self.depth_candidates)
+                if math.dist(candidate.p3, existing.p3) <= 1e-9
+                and math.dist(candidate.p4, existing.p4) <= 1e-9
+                and existing.is_compatible_with(axis)
+            ),
+            None,
+        )
+        if matching_index is None:
+            self.depth_candidates.append(candidate)
+            matching_index = len(self.depth_candidates) - 1
+        self._refresh_depth_candidate_controls(select_index=matching_index)
+        self.status_var.set(
+            f"Candidata guardada: {candidate.depth_px:.2f} px. Pruebe otra sección o elija la final."
+        )
+
+    def _use_depth_candidate(self) -> None:
+        if not self.depth_candidates:
+            self._show_error("No hay secciones candidatas guardadas.")
+            return
+        try:
+            index = int(self.depth_candidate_combo.current())
+            candidate = self.depth_candidates[index]
+            axis, _tolerance = self._direct_morphometry_parameters()
+        except (ValueError, IndexError, MeasurementError) as exc:
+            self._show_error(f"Seleccione una candidata válida: {exc}")
+            return
+        if not candidate.is_compatible_with(axis):
+            self._show_error(
+                "La candidata fue creada con otro eje longitudinal. Debe remarcarse; no se corrigió automáticamente."
+            )
+            return
+        self.points["p3"] = candidate.p3
+        self.points["p4"] = candidate.p4
+        self.depth_section_review_required = False
+        self._invalidate_measurement_results()
+        self.image_panel.set_points(self.points)
+        self.image_panel.clear_depth_review_required()
+        self.points_status_var.set(
+            f"Profundidad máxima seleccionada manualmente: candidata {index + 1}, {candidate.depth_px:.2f} px."
+        )
+        self.status_var.set(
+            "Se eligió la sección final manualmente; el software no verificó un máximo global."
+        )
+        self._refresh_calculate_states()
+
+    def _refresh_depth_candidate_controls(self, *, select_index: int | None = None) -> None:
+        values: list[str] = []
+        compatible_depths: list[float] = []
+        try:
+            axis, _tolerance = self._direct_morphometry_parameters()
+        except (MeasurementError, ValueError):
+            axis = None
+        for index, candidate in enumerate(self.depth_candidates, start=1):
+            compatible = axis is not None and candidate.is_compatible_with(axis)
+            suffix = "" if compatible else " · eje anterior"
+            values.append(f"C{index} · {candidate.depth_px:.2f} px{suffix}")
+            if compatible:
+                compatible_depths.append(candidate.depth_px)
+        self.image_panel.set_depth_candidates(
+            [(candidate.p3, candidate.p4) for candidate in self.depth_candidates]
+        )
+        self.depth_candidate_combo.configure(
+            values=tuple(values), state="readonly" if values else "disabled"
+        )
+        if values:
+            target = len(values) - 1 if select_index is None else max(0, min(select_index, len(values) - 1))
+            self.depth_candidate_combo.current(target)
+            maximum = max(compatible_depths) if compatible_depths else None
+            self.depth_candidate_status_var.set(
+                f"{len(values)} candidata(s); mayor compatible: {maximum:.2f} px."
+                if maximum is not None
+                else f"{len(values)} candidata(s), pendientes por cambio de eje."
+            )
+        else:
+            self.depth_candidate_var.set("")
+            self.depth_candidate_status_var.set("Sin candidatas guardadas.")
         self._refresh_calculate_states()
 
     def _save_points(self) -> None:
         if self.image_bgr is None or len(self.points) != 4:
             self._show_error("Complete p1, p2, p3 y p4 antes de guardar los puntos.")
+            return
+        if self.depth_section_review_required:
+            self._show_error("Confirme o remarque p3/p4 antes de guardar los puntos.")
             return
         default_name = f"{self.image_path.stem if self.image_path else 'points'}_points.json"
         path = filedialog.asksaveasfilename(
@@ -1568,12 +1847,40 @@ class MainWindow:
 
     def _on_point_selected(self, name: str, point: Point, complete: bool) -> None:
         self.points[name] = point
+        if name in {"p3", "p4"}:
+            self.depth_section_review_required = not complete
+        self._invalidate_measurement_results()
         if complete:
-            self.points_status_var.set("Puntos p1–p4 seleccionados en coordenadas originales.")
-            self.status_var.set("Selección completa. Puede calcular A y A′ con los mismos puntos.")
+            try:
+                axis, _tolerance = self._direct_morphometry_parameters()
+            except (MeasurementError, ValueError) as exc:
+                self.depth_section_review_required = True
+                self.image_panel.mark_depth_review_required()
+                self._show_error(
+                    f"Defina un eje longitudinal válido y remarque p3/p4: {exc}"
+                )
+                self._refresh_calculate_states()
+                return
+            depth = depth_separation_px(self.points["p3"], self.points["p4"], axis)
+            self.image_panel.clear_depth_review_required()
+            self.points_status_var.set(
+                f"Sección actual confirmada: {depth:.2f} px; máximo seleccionado manualmente."
+            )
+            self.status_var.set(
+                "Compare otras secciones o guarde esta candidata antes de calcular A, A′, B y C."
+            )
         else:
-            next_name = ("p1", "p2", "p3", "p4")[len(self.points)]
-            self.status_var.set(f"{name} registrado ({point[0]:.1f}, {point[1]:.1f}). Seleccione {next_name}.")
+            if name == "p1":
+                message = "Seleccione p2 según la convención caudal."
+            elif name == "p2":
+                message = "Elige una sección candidata y marca el perfil dorsal."
+            elif name == "p3":
+                message = "Coloca el punto ventral sobre la guía."
+            else:
+                message = "Revise p3 y p4 y confirme la sección."
+            self.status_var.set(
+                f"{name} registrado ({point[0]:.1f}, {point[1]:.1f}). {message}"
+            )
         self._refresh_calculate_states()
 
     def _calculate_a(self) -> None:
@@ -1773,6 +2080,11 @@ class MainWindow:
         if len(self.points) != 4:
             self._show_error("Cargue o seleccione p1, p2, p3 y p4 antes de calcular.")
             return False
+        if self.depth_section_review_required:
+            self._show_error(
+                "p3/p4 requieren remarcación o confirmación sobre la guía perpendicular."
+            )
+            return False
         return True
 
     def _b_missing_inputs(self) -> list[str]:
@@ -1785,6 +2097,8 @@ class MainWindow:
             missing.append("referencia geométrica")
         if len(self.points) != 4:
             missing.append("puntos p1–p4")
+        elif self.depth_section_review_required:
+            missing.append("revisión manual de p3–p4")
         if not self.b_replica_var.get().strip():
             missing.append("ID de réplica")
         if not self.b_position_var.get().strip():
@@ -1794,15 +2108,54 @@ class MainWindow:
         return missing
 
     def _refresh_calculate_states(self) -> None:
-        ready = self.image_bgr is not None and bool(self.markers) and len(self.points) == 4
+        selection_active = (
+            hasattr(self, "image_panel") and self.image_panel.selection_active
+        )
+        ready = (
+            self.image_bgr is not None
+            and bool(self.markers)
+            and len(self.points) == 4
+            and not self.depth_section_review_required
+        )
         state = "normal" if ready else "disabled"
         if hasattr(self, "calculate_a_button"):
             self.calculate_a_button.configure(state=state)
             self.calculate_a_prime_button.configure(state=state)
         if hasattr(self, "manual_points_button"):
-            self.manual_points_button.configure(state="normal" if self.image_bgr is not None else "disabled")
+            self.manual_points_button.configure(
+                state="normal"
+                if self.image_bgr is not None and not selection_active
+                else "disabled"
+            )
         if hasattr(self, "save_points_button"):
-            self.save_points_button.configure(state="normal" if len(self.points) == 4 else "disabled")
+            self.save_points_button.configure(
+                state="normal"
+                if len(self.points) == 4 and not self.depth_section_review_required
+                else "disabled"
+            )
+        if hasattr(self, "depth_points_button"):
+            can_mark_depth = (
+                self.image_bgr is not None
+                and "p1" in self.points
+                and "p2" in self.points
+                and not selection_active
+            )
+            self.depth_points_button.configure(
+                state="normal" if can_mark_depth else "disabled"
+            )
+            can_save_candidate = (
+                len(self.points) == 4
+                and not self.depth_section_review_required
+                and not selection_active
+            )
+            self.save_depth_candidate_button.configure(
+                state="normal" if can_save_candidate else "disabled"
+            )
+            self.use_depth_candidate_button.configure(
+                state="normal"
+                if self.depth_candidates and not selection_active
+                else "disabled"
+            )
         if hasattr(self, "calculate_b_button"):
             b_missing = self._b_missing_inputs()
             self.calculate_b_button.configure(state="normal" if not b_missing else "disabled")
@@ -1824,7 +2177,11 @@ class MainWindow:
             )
             self.sensitivity_c_button.configure(
                 state="normal"
-                if self.c_air_profile is not None and self.c_flat_port is not None and self.c_measurement_plane is not None and len(self.points) == 4
+                if self.c_air_profile is not None
+                and self.c_flat_port is not None
+                and self.c_measurement_plane is not None
+                and len(self.points) == 4
+                and not self.depth_section_review_required
                 else "disabled"
             )
             self.c_inputs_status_var.set(

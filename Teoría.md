@@ -831,10 +831,11 @@ También quedan límites que deben explicarse en la tesis:
 
 - A y A′ no aplican en su flujo actual una corrección explícita de distorsión de
   lente antes de la escala o la homografía;
-- las funciones de medición reciben (p_1,p_2,p_3,p_4) ya seleccionados: no
+- las funciones de medición reciben \(p_1,p_2,p_3,p_4\) ya seleccionados: no
   demuestran que esos puntos sean anatómicamente correctos;
-- en particular, el código valida la sección dada por (p_3,p_4), pero no busca
-  por sí mismo la profundidad corporal máxima sobre todas las secciones;
+- la interfaz guía manualmente una sección perpendicular y permite comparar
+  candidatas, pero no detecta el contorno ni selecciona automáticamente la
+  profundidad corporal máxima sobre todas las secciones;
 - el eje longitudinal también se recibe como entrada y su exactitud depende del
   procedimiento utilizado para determinarlo;
 - `coplanarity_error_mm` se registra, pero no se propaga todavía hasta una

@@ -72,8 +72,8 @@ La suite automatizada está organizada en `tests/unit`, `tests/integration` y fi
 3. **Cargar puntos JSON** o **Seleccionar puntos manualmente**. Después de seleccionar los cuatro puntos puede usar **Guardar puntos JSON**. Los cuatro puntos son:
    - `p1`: extremo anterior del hocico.
    - `p2`: extremo posterior de la réplica.
-   - `p3`: extremo superior de la profundidad corporal máxima.
-   - `p4`: extremo inferior de la profundidad corporal máxima.
+   - `p3`: perfil dorsal de una sección candidata.
+   - `p4`: perfil ventral de la misma sección perpendicular.
 4. Introduce el lado físico medido con calibre, el ángulo del eje longitudinal
    observado en la imagen y la tolerancia angular para la sección p3–p4. Un
    ángulo de `0°` solo corresponde cuando el pez está horizontal; en la imagen
@@ -84,7 +84,20 @@ La suite automatizada está organizada en `tests/unit`, `tests/integration` y fi
 7. Para C, abre su pestaña, carga un perfil de calibración en aire o crea uno con al menos 15 vistas, importa un YAML Calibmar `FLATPORT` o un `flat_port` manual, y define el plano de simetría en el marco físico de la cámara refractiva. El cálculo permanece `PENDING_VALIDATION` hasta validar físicamente el modelo.
 8. Revisa la tabla comparativa y exporta. El CSV maestro incluye A, A′, B y C cuando están disponibles; cualquiera de B o C puede exportarse por separado.
 
-El selector manual convierte los clics desde la imagen redimensionada a coordenadas de la imagen original antes de guardar o calcular.
+El selector manual convierte los clics desde el visor a coordenadas de la imagen
+original antes de guardar o calcular. Para p3–p4 muestra una perpendicular al
+eje longitudinal: p3 ancla la guía y p4 se restringe a ella. El punto provisional,
+el segmento y su profundidad en píxeles permanecen visibles antes de confirmar.
+El visor permite zoom, desplazamiento, arrastre de ambos extremos y ajuste fino
+con teclado. `Shift` + arrastre sobre p3 o p4 mueve la sección completa y deja
+explícito que ambos perfiles deben revisarse antes de confirmar.
+
+La interfaz permite guardar varias secciones candidatas, muestra el mayor valor
+compatible con el eje actual y exige que el usuario elija la sección final. Esta
+asistencia no detecta perfiles ni verifica un máximo global: el resultado se
+identifica como profundidad máxima seleccionada manualmente. Si cambia el eje,
+las marcaciones previas quedan pendientes de remarcación y no se corrigen en
+silencio.
 
 ## Definición experimental
 

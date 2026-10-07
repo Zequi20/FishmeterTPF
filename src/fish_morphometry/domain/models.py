@@ -10,6 +10,14 @@ Points = Mapping[str, Point]
 Point3D = tuple[float, float, float]
 
 
+def _body_depth_selection(points: Points) -> str | None:
+    """Describe sin sobreafirmar el origen de la sección p3–p4."""
+
+    if "p3" not in points or "p4" not in points:
+        return None
+    return "manual_section_not_automatically_verified_global_max"
+
+
 @dataclass(frozen=True)
 class MarkerObservation:
     """Descripción geométrica de un ArUco detectado en la imagen original."""
@@ -81,6 +89,7 @@ class MeasurementResult:
             "image_id": self.image_id,
             "units": "mm",
             "points_source": "shared_annotation",
+            "body_depth_selection": _body_depth_selection(self.points_px),
             "marker_id": self.marker_id,
             "marker_role": self.marker_role,
             "marker_plane": self.marker_plane,
@@ -170,6 +179,7 @@ class BMeasurementResult:
             "replica_plane_offset_direction": self.replica_plane_offset_direction,
             "units": self.units,
             "points_source": "shared_annotation",
+            "body_depth_selection": _body_depth_selection(self.points_px),
             "points_px": {name: list(point) for name, point in self.points_px.items()},
             "points_camera_mm": {
                 name: list(point) for name, point in self.points_camera_mm.items()
@@ -266,6 +276,7 @@ class CMeasurementResult:
             "calibration_profile_hash": self.calibration_profile_hash,
             "calibration_profile": self.calibration_profile_id,
             "points_source": "shared_annotation",
+            "body_depth_selection": _body_depth_selection(self.points_px),
             "units": self.units,
             "points_px": {name: list(point) for name, point in self.points_px.items()},
             "rays": {

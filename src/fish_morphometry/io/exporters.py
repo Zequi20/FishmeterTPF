@@ -58,6 +58,7 @@ def export_results_csv(results: Iterable[_Result], path: str | Path) -> Path:
         "body_depth_section_offset_mm",
         "body_depth_section_angle_degrees",
         "body_depth_valid",
+        "body_depth_selection",
         "quality_status",
         "quality_warnings",
         "coplanarity_error_mm",
@@ -131,6 +132,7 @@ def export_results_csv(results: Iterable[_Result], path: str | Path) -> Path:
                         "body_depth_section_angle_degrees", ""
                     ),
                     "body_depth_valid": payload.get("body_depth_valid", ""),
+                    "body_depth_selection": payload.get("body_depth_selection", ""),
                     "quality_status": quality.get("status", ""),
                     "quality_warnings": " | ".join(quality.get("warnings", [])),
                     "coplanarity_error_mm": payload.get("coplanarity_error_mm", ""),
