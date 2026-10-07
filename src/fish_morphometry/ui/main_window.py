@@ -75,7 +75,7 @@ from ..vision.aruco_detector import (
     select_marker,
 )
 from .image_panel import ImagePanel
-from .results_panel import ResultsPanel
+from .results_panel import MethodResultPanel, ResultsPanel
 from .styles import configure_styles
 
 
@@ -88,7 +88,7 @@ class MainWindow:
 
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.root.title("Experimento de morfometría de peces")
+        self.root.title("Fishmeter Lab")
         self.root.geometry("1280x920")
         self.root.minsize(1100, 760)
         self.root.configure(background="#f4f7fb")
@@ -192,7 +192,7 @@ class MainWindow:
         header = ttk.Frame(self.root, style="Header.TFrame", padding=(24, 18, 24, 16))
         header.grid(row=0, column=0, sticky="ew")
         header.columnconfigure(0, weight=1)
-        ttk.Label(header, text="Experimento de morfometría de peces", style="Title.TLabel").grid(
+        ttk.Label(header, text="Fishmeter Lab", style="Title.TLabel").grid(
             row=0, column=0, sticky="w"
         )
         ttk.Label(
@@ -245,6 +245,8 @@ class MainWindow:
         self._build_method_card(tab_a, "A", "ArUco fijo en vidrio", "glass").grid(
             row=0, column=0, sticky="new"
         )
+        self.result_a_panel = MethodResultPanel(tab_a, "A")
+        self.result_a_panel.grid(row=1, column=0, sticky="ew", pady=(10, 0))
 
         tab_a_prime = ttk.Frame(self.methods_notebook, style="App.TFrame", padding=10)
         tab_a_prime.columnconfigure(0, weight=1)
@@ -252,11 +254,22 @@ class MainWindow:
         self._build_method_card(
             tab_a_prime, "A′", "ArUco coplanar con la réplica", "coplanar"
         ).grid(row=0, column=0, sticky="new")
+        self.result_a_prime_panel = MethodResultPanel(tab_a_prime, "A′")
+        self.result_a_prime_panel.grid(row=1, column=0, sticky="ew", pady=(10, 0))
 
         tab_b = ttk.Frame(self.methods_notebook, style="App.TFrame", padding=10)
         self.methods_notebook.add(tab_b, text="Método B")
         b_content = self._scrollable_tab(tab_b)
         self._build_b_card(b_content).grid(row=0, column=0, sticky="new")
+        self.result_b_panel = MethodResultPanel(b_content, "B")
+        self.result_b_panel.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+
+        tab_c = ttk.Frame(self.methods_notebook, style="App.TFrame", padding=16)
+        self.methods_notebook.add(tab_c, text="Método C")
+        c_content = self._scrollable_tab(tab_c)
+        self._build_c_card(c_content).grid(row=0, column=0, sticky="new")
+        self.result_c_panel = MethodResultPanel(c_content, "C")
+        self.result_c_panel.grid(row=1, column=0, sticky="ew", pady=(10, 0))
 
         results = ttk.Frame(self.methods_notebook, style="App.TFrame", padding=10)
         results.columnconfigure(0, weight=1)
@@ -273,11 +286,6 @@ class MainWindow:
             style="Action.TButton",
             command=self._export_results,
         ).grid(row=2, column=0, sticky="w", pady=(9, 0))
-
-        tab_c = ttk.Frame(self.methods_notebook, style="App.TFrame", padding=16)
-        self.methods_notebook.add(tab_c, text="Método C")
-        c_content = self._scrollable_tab(tab_c)
-        self._build_c_card(c_content).grid(row=0, column=0, sticky="new")
 
         ttk.Label(
             self.root,
@@ -501,7 +509,18 @@ class MainWindow:
         self.result_b = None
         self.result_c = None
         if hasattr(self, "results_panel"):
-            self.results_panel.clear()
+            self._refresh_result_views()
+
+    def _refresh_result_views(self) -> None:
+        """Sincroniza la comparación general y el resumen de cada pestaña."""
+
+        self.results_panel.set_results(
+            self.result_a, self.result_a_prime, self.result_b, self.result_c
+        )
+        self.result_a_panel.set_result(self.result_a)
+        self.result_a_prime_panel.set_result(self.result_a_prime)
+        self.result_b_panel.set_result(self.result_b)
+        self.result_c_panel.set_result(self.result_c)
 
     def _on_axis_angle_changed(self, *_args: object) -> None:
         """Exige remarcar p3/p4 cuando cambia el eje; nunca los corrige solo."""
@@ -1416,7 +1435,7 @@ class MainWindow:
             longitudinal_axis_px=longitudinal_axis,
             maximum_depth_section_angle_degrees=depth_tolerance,
         )
-        self.results_panel.set_results(self.result_a, self.result_a_prime, self.result_b, self.result_c)
+        self._refresh_result_views()
         self._refresh_calculate_states()
         if self.result_c.quality.status == "ERROR":
             self.status_var.set(f"Método C excluido: {self.result_c.exclusion_reason}")
@@ -1496,9 +1515,7 @@ class MainWindow:
             f"protocolo {self.result_c.quality.status}. "
             f"Exportada en {paths['csv']}."
         )
-        self.results_panel.set_results(
-            self.result_a, self.result_a_prime, self.result_b, self.result_c
-        )
+        self._refresh_result_views()
         if record.quality_status == "FAIL":
             messagebox.showwarning(
                 "Validación C fallida",
@@ -1591,7 +1608,7 @@ class MainWindow:
         self.result_c = None
         self.image_panel.set_image(image)
         self._refresh_depth_candidate_controls()
-        self.results_panel.clear()
+        self._refresh_result_views()
         self.marker_status_var.set("No hay marcadores detectados.")
         self.points_status_var.set(f"Imagen {image.shape[1]}×{image.shape[0]} px; faltan p1–p4.")
         self.status_var.set(f"Imagen cargada: {self.image_path.name}.")
@@ -1606,6 +1623,7 @@ class MainWindow:
         except ArucoDetectionError as exc:
             self._show_error(str(exc))
             return
+        self.image_panel.set_markers(self.markers)
         if not self.markers:
             self.marker_status_var.set("No se detectaron marcadores.")
             self.status_var.set("Detección completada sin marcadores visibles.")
@@ -1901,7 +1919,7 @@ class MainWindow:
         except (ArucoDetectionError, MeasurementError, ValueError) as exc:
             self._show_error(str(exc))
             return
-        self.results_panel.set_results(self.result_a, self.result_a_prime, self.result_b, self.result_c)
+        self._refresh_result_views()
         self.status_var.set(f"Método A calculado con estado {self.result_a.quality.status}.")
 
     def _calculate_a_prime(self) -> None:
@@ -1923,7 +1941,7 @@ class MainWindow:
         except (ArucoDetectionError, MeasurementError, ValueError) as exc:
             self._show_error(str(exc))
             return
-        self.results_panel.set_results(self.result_a, self.result_a_prime, self.result_b, self.result_c)
+        self._refresh_result_views()
         self.status_var.set(f"Método A′ calculado con estado {self.result_a_prime.quality.status}.")
 
     def _calculate_b(self) -> None:
@@ -1954,7 +1972,7 @@ class MainWindow:
         except (MeasurementError, RailGeometryError, ValueError) as exc:
             self._show_error(str(exc))
             return
-        self.results_panel.set_results(self.result_a, self.result_a_prime, self.result_b, self.result_c)
+        self._refresh_result_views()
         self._refresh_calculate_states()
         if self.result_b.quality.status == "ERROR":
             self.status_var.set(f"Método B excluido: {self.result_b.exclusion_reason}")
@@ -2027,9 +2045,7 @@ class MainWindow:
         except (MeasurementError, RailGeometryError, ValueError, OSError) as exc:
             self._show_error(f"No se pudo registrar la validación: {exc}")
             return
-        self.results_panel.set_results(
-            self.result_a, self.result_a_prime, self.result_b, self.result_c
-        )
+        self._refresh_result_views()
         self.status_var.set(
             f"Validación B registrada: estimado {record.estimated_length_mm:.3f} mm; "
             f"error {record.signed_error_mm:+.3f} mm · {record.quality_status}. "

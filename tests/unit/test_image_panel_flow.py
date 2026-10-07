@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from fish_morphometry.domain.models import MarkerObservation
 from fish_morphometry.ui.image_panel import ImagePanel
 
 
@@ -19,6 +20,18 @@ class _Canvas:
         pass
 
 
+class _RecordingCanvas(_Canvas):
+    def __init__(self) -> None:
+        self.lines = []
+        self.texts = []
+
+    def create_line(self, *coordinates, **options) -> None:
+        self.lines.append((coordinates, options))
+
+    def create_text(self, *coordinates, **options) -> None:
+        self.texts.append((coordinates, options))
+
+
 def _panel(points):
     """Crea el estado lógico del visor sin requerir un servidor gráfico."""
 
@@ -28,6 +41,7 @@ def _panel(points):
     panel._zoom = 1.0
     panel._scale = 1.0
     panel._offset = (0.0, 0.0)
+    panel._markers = ()
     panel._points = dict(points)
     panel._candidate_sections = ()
     panel._selection_mode = "idle"
@@ -143,3 +157,31 @@ def test_moving_the_complete_section_requires_anatomical_review():
     assert panel.points["p3"] == pytest.approx((70.0, 25.0))
     assert panel.points["p4"] == pytest.approx((70.0, 95.0))
     assert "Revisa" in panel.selection_status_var.value
+
+
+def test_detected_marker_is_outlined_and_labeled_at_its_first_corner():
+    panel = _panel({})
+    panel._scale = 2.0
+    panel._offset = (5.0, 7.0)
+    panel._markers = (
+        MarkerObservation(
+            marker_id=23,
+            corners=((10.0, 20.0), (30.0, 20.0), (30.0, 40.0), (10.0, 40.0)),
+            center=(20.0, 30.0),
+            area_px2=400.0,
+            side_lengths_px=(20.0, 20.0, 20.0, 20.0),
+            side_mean_px=20.0,
+            side_cv=0.0,
+        ),
+    )
+    canvas = _RecordingCanvas()
+    panel.canvas = canvas
+
+    panel._draw_markers()
+
+    assert canvas.lines[0][0] == pytest.approx(
+        (25.0, 47.0, 65.0, 47.0, 65.0, 87.0, 25.0, 87.0, 25.0, 47.0)
+    )
+    assert canvas.lines[0][1]["tags"] == "marker"
+    assert canvas.texts[-1][0] == pytest.approx((31.0, 53.0))
+    assert canvas.texts[-1][1]["text"] == "ID 23"

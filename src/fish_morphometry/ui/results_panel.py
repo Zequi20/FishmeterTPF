@@ -7,6 +7,8 @@ from tkinter import ttk
 
 from ..domain.models import BMeasurementResult, CMeasurementResult, MeasurementResult
 
+MethodResult = MeasurementResult | BMeasurementResult | CMeasurementResult
+
 
 def _format(value: float | None) -> str:
     return "—" if value is None else f"{value:.3f}"
@@ -14,6 +16,57 @@ def _format(value: float | None) -> str:
 
 def _method_label(method: str) -> str:
     return "A′" if method == "A_PRIME" else method
+
+
+def format_method_result(result: MethodResult | None) -> str:
+    """Resume una medición para mostrarla dentro de su propia pestaña."""
+
+    if result is None:
+        return "Aún no se calculó este método."
+
+    status = result.quality.status
+    warnings = " | ".join(result.quality.warnings)
+    if status == "ERROR":
+        exclusion_reason = getattr(result, "exclusion_reason", None)
+        detail = exclusion_reason or warnings or "El cálculo no produjo una medición válida."
+        return f"Estado: ERROR\nResultado no disponible: {detail}"
+
+    depth_state = "sección válida" if result.body_depth_valid else "sección inválida"
+    lines = [
+        f"Longitud total (LT): {_format(result.total_length_mm)} mm",
+        f"Profundidad corporal: {_format(result.body_depth_mm)} mm ({depth_state})",
+        f"Estado: {status}",
+    ]
+    if warnings:
+        lines.append(f"Advertencias: {warnings}")
+    return "\n".join(lines)
+
+
+class MethodResultPanel(ttk.Frame):
+    """Resumen del resultado calculado para una pestaña de método."""
+
+    def __init__(self, parent: tk.Misc, method_label: str) -> None:
+        super().__init__(parent, style="Card.TFrame", padding=12)
+        self.columnconfigure(0, weight=1)
+        ttk.Label(
+            self,
+            text=f"Resultado del método {method_label}",
+            style="CardTitle.TLabel",
+        ).grid(row=0, column=0, sticky="w")
+        self.summary = ttk.Label(
+            self,
+            text=format_method_result(None),
+            style="CardBody.TLabel",
+            justify="left",
+            wraplength=430,
+        )
+        self.summary.grid(row=1, column=0, sticky="w", pady=(7, 0))
+
+    def set_result(self, result: MethodResult | None) -> None:
+        self.summary.configure(text=format_method_result(result))
+
+    def clear(self) -> None:
+        self.set_result(None)
 
 
 class ResultsPanel(ttk.Frame):
@@ -159,4 +212,4 @@ class ResultsPanel(ttk.Frame):
         self.details.configure(text="\n".join(detail_lines))
 
 
-__all__ = ["ResultsPanel"]
+__all__ = ["MethodResultPanel", "ResultsPanel", "format_method_result"]

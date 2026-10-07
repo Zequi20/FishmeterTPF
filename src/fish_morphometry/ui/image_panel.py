@@ -10,7 +10,7 @@ import numpy as np
 import tkinter as tk
 from tkinter import ttk
 
-from ..domain.models import Point
+from ..domain.models import MarkerObservation, Point
 from ..domain.schemas import POINT_NAMES
 from ..measurements.depth_guidance import (
     ViewportTransform,
@@ -94,6 +94,7 @@ class ImagePanel(ttk.Frame):
         self._zoom = 1.0
         self._scale = 1.0
         self._offset = (0.0, 0.0)
+        self._markers: tuple[MarkerObservation, ...] = ()
         self._points: dict[str, Point] = {}
         self._candidate_sections: tuple[tuple[Point, Point], ...] = ()
         self._selection_mode = "idle"
@@ -152,6 +153,7 @@ class ImagePanel(ttk.Frame):
         """Muestra una imagen BGR y reinicia los puntos y el visor."""
 
         self._image_bgr = image_bgr
+        self._markers = ()
         self._points = {}
         self._candidate_sections = ()
         self._selection_mode = "idle"
@@ -168,6 +170,7 @@ class ImagePanel(ttk.Frame):
 
         self._image_bgr = None
         self._photo = None
+        self._markers = ()
         self._points = {}
         self._candidate_sections = ()
         self._selection_mode = "idle"
@@ -189,6 +192,12 @@ class ImagePanel(ttk.Frame):
         self._points = {
             name: (float(point[0]), float(point[1])) for name, point in points.items()
         }
+        self._draw_annotations()
+
+    def set_markers(self, markers: Sequence[MarkerObservation]) -> None:
+        """Dibuja los ArUco detectados y etiqueta cada uno por su ID."""
+
+        self._markers = tuple(markers)
         self._draw_annotations()
 
     def set_depth_candidates(self, candidates: Sequence[tuple[Point, Point]]) -> None:
@@ -372,6 +381,8 @@ class ImagePanel(ttk.Frame):
         self.canvas.delete("point")
         self.canvas.delete("candidate")
         self.canvas.delete("guide")
+        self.canvas.delete("marker")
+        self._draw_markers()
         self._draw_candidates()
         for name in POINT_NAMES:
             if name not in self._points:
@@ -400,6 +411,38 @@ class ImagePanel(ttk.Frame):
                 tags="point",
             )
         self._draw_depth_guide()
+
+    def _draw_markers(self) -> None:
+        """Traza el contorno y sitúa el ID junto a la primera esquina detectada."""
+
+        for marker in self._markers:
+            corners = [self._original_to_display(point) for point in marker.corners]
+            outline = [coordinate for point in (*corners, corners[0]) for coordinate in point]
+            self.canvas.create_line(
+                *outline,
+                fill="#22d3ee",
+                width=3,
+                tags="marker",
+            )
+            corner_x, corner_y = corners[0]
+            self.canvas.create_text(
+                corner_x + 7,
+                corner_y + 7,
+                text=f"ID {marker.marker_id}",
+                anchor="nw",
+                fill="#0f172a",
+                font=("TkDefaultFont", 10, "bold"),
+                tags="marker",
+            )
+            self.canvas.create_text(
+                corner_x + 6,
+                corner_y + 6,
+                text=f"ID {marker.marker_id}",
+                anchor="nw",
+                fill="#67e8f9",
+                font=("TkDefaultFont", 10, "bold"),
+                tags="marker",
+            )
 
     def _draw_candidates(self) -> None:
         for index, (p3, p4) in enumerate(self._candidate_sections, start=1):
