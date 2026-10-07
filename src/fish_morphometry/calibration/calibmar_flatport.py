@@ -124,6 +124,23 @@ def import_calibmar_flatport(
         raise CalibmarFlatPortError(
             "non_svp_parameters debe tener [Nx, Ny, Nz, int_dist, int_thick, na, ng, nw]."
         )
+    raw_standard_deviations = payload.get("non_svp_est_std_dev")
+    standard_deviations: tuple[float, ...] | None = None
+    if raw_standard_deviations is not None:
+        if isinstance(raw_standard_deviations, str):
+            raw_standard_deviations = [
+                value.strip() for value in raw_standard_deviations.split(",") if value.strip()
+            ]
+        parsed_deviations = _numbers(
+            raw_standard_deviations, "non_svp_est_std_dev"
+        )
+        if len(parsed_deviations) != 8 or any(value < 0 for value in parsed_deviations):
+            raise CalibmarFlatPortError(
+                "non_svp_est_std_dev debe contener ocho desviaciones estándar no negativas."
+            )
+        parsed_deviations[3] *= scale
+        parsed_deviations[4] *= scale
+        standard_deviations = tuple(parsed_deviations)
     try:
         port = make_flat_port_parameters(
             normal_camera=non_svp[:3],
@@ -133,6 +150,7 @@ def import_calibmar_flatport(
             n_glass=non_svp[6],
             n_water=non_svp[7],
             source="calibmar_FLATPORT",
+            parameter_standard_deviations=standard_deviations,
         )
     except RefractivePortError as exc:
         raise CalibmarFlatPortError(str(exc)) from exc
@@ -154,6 +172,8 @@ def import_calibmar_flatport(
                 "camera_parameter_order": "fx,fy,cx,cy,k1,k2,p1,p2[,k3,k4,k5,k6]",
                 "geometry_units_input": str(raw_units),
                 "flatport_normal_original": list(non_svp[:3]),
+                "rms_scope": "calibmar_refractive_overall",
+                "non_svp_est_std_dev_available": standard_deviations is not None,
             },
         )
     except AirCalibrationError as exc:

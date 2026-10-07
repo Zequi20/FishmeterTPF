@@ -1,6 +1,13 @@
 import pytest
+import yaml
 
-from fish_morphometry.geometry.refractive_port import FlatPortParameters, RefractivePortError, make_flat_port_parameters, trace_refracted_ray
+from fish_morphometry.geometry.refractive_port import (
+    FlatPortParameters,
+    RefractivePortError,
+    load_manual_flat_port,
+    make_flat_port_parameters,
+    trace_refracted_ray,
+)
 from fish_morphometry.methods.c import measure_c
 
 
@@ -55,6 +62,7 @@ def test_refracted_ray_parallel_to_measurement_plane_is_rejected(air_profile, fl
         measure_c(
             "parallel", points_px, air_profile, flat_port,
             {"point_camera_mm": (0, 0, 200), "normal_camera": (1, 0, 0)},
+            replica_id="r",
             image_shape=(200, 200, 3),
         )
 
@@ -66,3 +74,33 @@ def test_port_normal_is_normalized_and_flagged():
     )
     assert port.port_normal == pytest.approx((0, 0, 1))
     assert port.normal_was_normalized is True
+
+
+def test_port_and_plane_hashes_detect_tampering(tmp_path, air_profile, points_px):
+    port = make_flat_port_parameters(
+        normal_camera=(0, 0, 1), interface_distance_mm=100, glass_thickness_mm=10,
+        n_air=1, n_glass=1.5, n_water=1.333,
+    )
+    payload = {"flat_port": port.to_dict()}
+    path = tmp_path / "port.yaml"
+    path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+    loaded = load_manual_flat_port(path)
+    assert loaded.port_hash == port.port_hash
+    payload["flat_port"]["interface_distance_mm"] = 101
+    path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+    with pytest.raises(RefractivePortError, match="hash"):
+        load_manual_flat_port(path)
+
+    with pytest.raises(ValueError, match="hash"):
+        measure_c(
+            "tampered-plane",
+            points_px,
+            air_profile,
+            port,
+            {
+                "point_camera_mm": (0, 0, 200),
+                "normal_camera": (0, 0, 1),
+                "plane_hash": "invalid",
+            },
+            replica_id="r",
+        )

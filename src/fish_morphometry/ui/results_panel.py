@@ -127,10 +127,15 @@ class ResultsPanel(ttk.Frame):
                     f"({depth_state}) · estado {status} · {warnings}"
                 )
             elif result.method == "C":
+                depth_state = (
+                    "sección válida" if result.body_depth_valid else "profundidad inválida"
+                )
                 detail_lines.append(
                     f"C · réplica {result.replica_id} · puerto d={result.interface_distance_mm:.3f} mm · "
                     f"vidrio={result.glass_thickness_mm:.3f} mm · LT={_format(result.total_length_mm)} mm · "
-                    f"PC={_format(result.body_depth_mm)} mm · estado {status} · {warnings}"
+                    f"PC={_format(result.body_depth_mm)} mm · desvío p3–p4 "
+                    f"{_format(result.body_depth_section_angle_degrees)}° ({depth_state}) · "
+                    f"estado {status} · {warnings}"
                 )
                 if result.q1_camera_mm and result.q2_camera_mm and result.v_water:
                     detail_lines.append(

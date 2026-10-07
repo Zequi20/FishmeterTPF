@@ -8,6 +8,8 @@ from .physical_b import (
 from .c_validation import (
     CValidationRecord,
     CSensitivityPoint,
+    apply_physical_validation_to_c_result,
+    apply_physical_validations_to_c_result,
     export_c_validation,
     sensitivity_c,
     validate_known_segment_c,
@@ -17,6 +19,8 @@ __all__ = [
     "PhysicalValidationRecord",
     "CValidationRecord",
     "CSensitivityPoint",
+    "apply_physical_validation_to_c_result",
+    "apply_physical_validations_to_c_result",
     "export_c_validation",
     "sensitivity_c",
     "validate_known_segment_c",

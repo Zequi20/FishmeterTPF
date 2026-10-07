@@ -37,6 +37,9 @@ class AirCalibrationViewReport:
     reprojection_error_px: float | None = None
     rvec: tuple[float, float, float] | None = None
     tvec_mm: tuple[float, float, float] | None = None
+    board_center_normalized: tuple[float, float] | None = None
+    board_area_fraction: float | None = None
+    tilt_degrees: float | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -46,6 +49,13 @@ class AirCalibrationViewReport:
             "reprojection_error_px": self.reprojection_error_px,
             "rvec": None if self.rvec is None else list(self.rvec),
             "tvec_mm": None if self.tvec_mm is None else list(self.tvec_mm),
+            "board_center_normalized": (
+                None
+                if self.board_center_normalized is None
+                else list(self.board_center_normalized)
+            ),
+            "board_area_fraction": self.board_area_fraction,
+            "tilt_degrees": self.tilt_degrees,
         }
 
 
@@ -82,11 +92,28 @@ class AirCalibrationProfile:
     def D(self) -> np.ndarray:
         return np.asarray(self.distortion_coefficients, dtype=np.float64)
 
+    @property
+    def calibration_context_hash(self) -> str:
+        """Identifica intrínsecos y condiciones que afectan la calibración C."""
+
+        payload = {
+            "profile_hash": self.profile_hash,
+            "source": self.source,
+            "board_inner_corners": self.board_inner_corners,
+            "square_size_mm": self.square_size_mm,
+            "source_metadata": self.source_metadata or {},
+        }
+        packed = json.dumps(
+            payload, sort_keys=True, separators=(",", ":"), default=str
+        ).encode("utf-8")
+        return hashlib.sha256(packed).hexdigest()
+
     def to_dict(self) -> dict[str, object]:
         return {
             "schema": SCHEMA,
             "profile_id": self.profile_id,
             "profile_hash": self.profile_hash,
+            "calibration_context_hash": self.calibration_context_hash,
             "model": self.model,
             "camera_matrix": [list(row) for row in self.camera_matrix],
             "distortion_coefficients": list(self.distortion_coefficients),
@@ -168,6 +195,10 @@ def validate_air_profile(profile: AirCalibrationProfile) -> None:
         len(profile.board_inner_corners) != 2 or any(int(v) < 2 for v in profile.board_inner_corners)
     ):
         raise AirCalibrationError("Las esquinas internas del tablero son inválidas.")
+    if profile.board_inner_corners is not None and profile.square_size_mm is None:
+        raise AirCalibrationError("Un tablero declarado requiere square_size_mm.")
+    if profile.board_inner_corners is None and profile.square_size_mm is not None:
+        raise AirCalibrationError("square_size_mm no puede declararse sin el tablero asociado.")
     if profile.square_size_mm is not None and _finite(profile.square_size_mm, "El cuadro") <= 0:
         raise AirCalibrationError("El tamaño del cuadro debe ser positivo.")
     if profile.rms_px is not None and _finite(profile.rms_px, "El RMS") < 0:
@@ -252,8 +283,11 @@ def calibrate_air_from_images(
     resolution: tuple[int, int] | None,
     profile_id: str = "C-air",
     minimum_usable_views: int = 15,
+    maximum_per_view_error_px: float = 1.5,
+    minimum_center_span_fraction: float = 0.20,
+    minimum_tilt_span_degrees: float = 10.0,
 ) -> AirCalibrationProfile:
-    """Calibra K_air/D_air con tablero en aire y conserva poses por vista."""
+    """Calibra K_air/D_air y rechaza vistas o conjuntos geométricamente débiles."""
 
     columns, rows = int(inner_corners[0]), int(inner_corners[1])
     scale = unit_scale_to_mm(units)
@@ -262,7 +296,24 @@ def calibrate_air_from_images(
         raise AirCalibrationError("El tablero y el tamaño de cuadro deben ser positivos.")
     if int(minimum_usable_views) < 15:
         raise AirCalibrationError("La calibración en aire requiere solicitar al menos 15 vistas.")
+    maximum_view_error = _finite(maximum_per_view_error_px, "El error máximo por vista")
+    minimum_center_span = _finite(
+        minimum_center_span_fraction, "La cobertura mínima de centros"
+    )
+    minimum_tilt_span = _finite(
+        minimum_tilt_span_degrees, "La diversidad angular mínima"
+    )
+    if maximum_view_error <= 0:
+        raise AirCalibrationError("El error máximo por vista debe ser positivo.")
+    if minimum_center_span < 0 or minimum_center_span > 1:
+        raise AirCalibrationError("La cobertura mínima debe estar entre 0 y 1.")
+    if minimum_tilt_span < 0 or minimum_tilt_span >= 90:
+        raise AirCalibrationError(
+            "La diversidad angular mínima debe estar entre 0 y 90 grados."
+        )
     expected_resolution = None if resolution is None else (int(resolution[0]), int(resolution[1]))
+    if expected_resolution is not None and any(value <= 0 for value in expected_resolution):
+        raise AirCalibrationError("La resolución configurada debe ser positiva.")
     objects = _object_points((columns, rows), square_mm)
     object_points: list[np.ndarray] = []
     image_points: list[np.ndarray] = []
@@ -307,18 +358,135 @@ def calibrate_air_from_images(
             f"Se requieren al menos {minimum_usable_views} vistas utilizables; se aceptaron {len(object_points)}.",
             reports=reports,
         )
-    try:
-        result = cv2.calibrateCameraExtended(object_points, image_points, expected_resolution, None, None)
-        rms, matrix, distortion, rvecs, tvecs = result[:5]
-        errors = np.asarray(result[7], dtype=float).reshape(-1)
-    except (AttributeError, cv2.error) as exc:
-        raise AirCalibrationError(f"OpenCV no pudo calibrar en aire: {exc}", reports=reports) from exc
+    def run_calibration() -> tuple[
+        float,
+        np.ndarray,
+        np.ndarray,
+        list[np.ndarray],
+        list[np.ndarray],
+        np.ndarray,
+    ]:
+        try:
+            if hasattr(cv2, "calibrateCameraExtended"):
+                result = cv2.calibrateCameraExtended(
+                    object_points, image_points, expected_resolution, None, None
+                )
+                rms_value, matrix_value, distortion_value, rvec_values, tvec_values = result[:5]
+                error_values = np.asarray(result[7], dtype=float).reshape(-1)
+            else:
+                rms_value, matrix_value, distortion_value, rvec_values, tvec_values = cv2.calibrateCamera(
+                    object_points, image_points, expected_resolution, None, None
+                )
+                computed_errors: list[float] = []
+                for objects, observed, rvec, tvec in zip(
+                    object_points, image_points, rvec_values, tvec_values, strict=True
+                ):
+                    projected, _ = cv2.projectPoints(
+                        objects, rvec, tvec, matrix_value, distortion_value
+                    )
+                    computed_errors.append(
+                        float(cv2.norm(observed, projected, cv2.NORM_L2) / math.sqrt(len(objects)))
+                    )
+                error_values = np.asarray(computed_errors, dtype=float)
+            return (
+                float(rms_value),
+                matrix_value,
+                distortion_value,
+                list(rvec_values),
+                list(tvec_values),
+                np.asarray(error_values, dtype=float).reshape(-1),
+            )
+        except (AttributeError, cv2.error) as exc:
+            raise AirCalibrationError(
+                f"OpenCV no pudo calibrar en aire: {exc}", reports=reports
+            ) from exc
+
+    while True:
+        rms, matrix, distortion, rvecs, tvecs, errors = run_calibration()
+        if len(errors) != len(object_points):
+            raise AirCalibrationError(
+                "OpenCV devolvió un número inconsistente de errores por vista.",
+                reports=reports,
+            )
+        outliers = [
+            index
+            for index, error in enumerate(errors)
+            if not math.isfinite(float(error)) or float(error) > maximum_view_error
+        ]
+        if not outliers:
+            break
+        outlier_set = set(outliers)
+        for local_index in outliers:
+            report_index = accepted_indices[local_index]
+            error = float(errors[local_index])
+            reports[report_index] = replace(
+                reports[report_index],
+                accepted=False,
+                rejection_reason=(
+                    f"error de reproyección {error:.3f} px > {maximum_view_error:.3f} px"
+                ),
+                reprojection_error_px=error,
+            )
+        if len(object_points) - len(outliers) < int(minimum_usable_views):
+            raise AirCalibrationError(
+                "La eliminación de vistas con alto error deja menos vistas que el mínimo requerido.",
+                reports=reports,
+            )
+        object_points[:] = [
+            value for index, value in enumerate(object_points) if index not in outlier_set
+        ]
+        image_points[:] = [
+            value for index, value in enumerate(image_points) if index not in outlier_set
+        ]
+        accepted_indices[:] = [
+            value for index, value in enumerate(accepted_indices) if index not in outlier_set
+        ]
+
+    centers: list[tuple[float, float]] = []
+    normals: list[np.ndarray] = []
+    width, height = expected_resolution
     for index, report_index in enumerate(accepted_indices):
+        observed = image_points[index].reshape(-1, 2)
+        center = (
+            float(np.mean(observed[:, 0]) / width),
+            float(np.mean(observed[:, 1]) / height),
+        )
+        area_fraction = float(
+            abs(cv2.contourArea(cv2.convexHull(observed))) / (width * height)
+        )
+        rotation, _ = cv2.Rodrigues(rvecs[index])
+        normal = rotation @ np.asarray((0.0, 0.0, 1.0))
+        normal /= np.linalg.norm(normal)
+        tilt = math.degrees(math.acos(float(np.clip(abs(normal[2]), 0.0, 1.0))))
+        centers.append(center)
+        normals.append(normal)
         reports[report_index] = replace(
             reports[report_index],
             reprojection_error_px=float(errors[index]),
             rvec=tuple(float(v) for v in np.asarray(rvecs[index]).reshape(3)),
             tvec_mm=tuple(float(v) for v in np.asarray(tvecs[index]).reshape(3)),
+            board_center_normalized=center,
+            board_area_fraction=area_fraction,
+            tilt_degrees=tilt,
+        )
+    center_span_x = max(value[0] for value in centers) - min(value[0] for value in centers)
+    center_span_y = max(value[1] for value in centers) - min(value[1] for value in centers)
+    tilt_span = max(
+        math.degrees(math.acos(float(np.clip(abs(np.dot(first, second)), 0.0, 1.0))))
+        for index, first in enumerate(normals)
+        for second in normals[index:]
+    )
+    if center_span_x < minimum_center_span or center_span_y < minimum_center_span:
+        raise AirCalibrationError(
+            "Las vistas no cubren suficiente diversidad espacial de centros del tablero: "
+            f"span=({center_span_x:.3f}, {center_span_y:.3f}), mínimo={minimum_center_span:.3f}.",
+            reports=reports,
+        )
+    if tilt_span < minimum_tilt_span:
+        raise AirCalibrationError(
+            "Las vistas no cubren suficiente diversidad de inclinación: "
+            f"span={tilt_span:.3f}°, mínimo={minimum_tilt_span:.3f}°.",
+            reports=reports,
         )
     return make_air_calibration_profile(
         profile_id=profile_id,
@@ -332,7 +500,17 @@ def calibrate_air_from_images(
         rms_px=float(rms),
         source="opencv_calibrateCamera_air",
         view_reports=reports,
-        source_metadata={"minimum_usable_views": int(minimum_usable_views), "rms_target_px": 0.5},
+        source_metadata={
+            "minimum_usable_views": int(minimum_usable_views),
+            "rms_target_px": 0.5,
+            "rms_scope": "in_air_intrinsics",
+            "maximum_per_view_error_px": maximum_view_error,
+            "minimum_center_span_fraction": minimum_center_span,
+            "center_span_fraction": [center_span_x, center_span_y],
+            "minimum_tilt_span_degrees": minimum_tilt_span,
+            "tilt_span_degrees": tilt_span,
+            "tilt_span_definition": "maximum_pairwise_board_normal_angle",
+        },
     )
 
 
@@ -364,10 +542,25 @@ def load_air_calibration(path: str | Path) -> AirCalibrationProfile:
                 reprojection_error_px=None if item.get("reprojection_error_px") is None else float(item["reprojection_error_px"]),
                 rvec=None if item.get("rvec") is None else tuple(float(v) for v in item["rvec"]),
                 tvec_mm=None if item.get("tvec_mm") is None else tuple(float(v) for v in item["tvec_mm"]),
+                board_center_normalized=(
+                    None
+                    if item.get("board_center_normalized") is None
+                    else tuple(float(v) for v in item["board_center_normalized"])
+                ),
+                board_area_fraction=(
+                    None
+                    if item.get("board_area_fraction") is None
+                    else float(item["board_area_fraction"])
+                ),
+                tilt_degrees=(
+                    None
+                    if item.get("tilt_degrees") is None
+                    else float(item["tilt_degrees"])
+                ),
             )
             for item in views.get("reports", [])
         )
-        return AirCalibrationProfile(
+        profile = AirCalibrationProfile(
             profile_id=str(payload["profile_id"]),
             profile_hash=str(payload["profile_hash"]),
             model=str(payload["model"]),
@@ -388,6 +581,13 @@ def load_air_calibration(path: str | Path) -> AirCalibrationProfile:
             view_reports=reports,
             source_metadata=dict(payload.get("source_metadata") or {}),
         )
+        stored_context_hash = payload.get("calibration_context_hash")
+        if (
+            stored_context_hash is not None
+            and str(stored_context_hash) != profile.calibration_context_hash
+        ):
+            raise AirCalibrationError("El hash del contexto de calibración en aire no coincide.")
+        return profile
     except (KeyError, TypeError, ValueError, IndexError) as exc:
         raise AirCalibrationError(f"El perfil de aire está incompleto: {exc}") from exc
 

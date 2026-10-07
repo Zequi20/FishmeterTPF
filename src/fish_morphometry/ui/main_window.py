@@ -42,7 +42,6 @@ from ..geometry.refractive_port import (
     load_manual_flat_port,
     make_flat_port_parameters,
     make_measurement_plane,
-    measurement_plane_from_rail,
 )
 from ..io.exporters import export_b_result, export_c_result, export_method_results, export_results_csv
 from ..measurements.points import load_points_json, save_points_json
@@ -59,6 +58,7 @@ from ..validation.physical_b import (
 )
 from ..validation.c_validation import (
     CValidationRecord,
+    apply_physical_validations_to_c_result,
     export_c_validation,
     sensitivity_c,
     validate_known_segment_c,
@@ -131,7 +131,8 @@ class MainWindow:
         self.c_replica_var = tk.StringVar(value="")
         self.c_repetition_var = tk.StringVar(value="")
         self.c_position_var = tk.StringVar(value="")
-        self.c_offset_var = tk.StringVar(value="")
+        self.c_validation_absolute_error_var = tk.StringVar(value="")
+        self.c_validation_percentage_error_var = tk.StringVar(value="1.0")
 
         self.dictionary_var = tk.StringVar(value="DICT_4X4_50")
         self.a_id_var = tk.StringVar(value="10")
@@ -701,11 +702,8 @@ class MainWindow:
 
         ttk.Separator(card, orient="horizontal").grid(row=14, column=0, columnspan=4, sticky="ew", pady=(9, 7))
         ttk.Label(card, text="3 · Plano de medición", style="CardTitle.TLabel").grid(row=15, column=0, columnspan=4, sticky="w")
-        ttk.Button(card, text="Usar geometría del rail de B", style="Action.TButton", command=self._use_c_rail_plane).grid(
-            row=16, column=0, columnspan=2, sticky="ew", pady=(6, 0), padx=(0, 4)
-        )
         ttk.Button(card, text="Usar plano explícito", style="Action.TButton", command=self._set_c_explicit_plane).grid(
-            row=16, column=2, columnspan=2, sticky="ew", pady=(6, 0), padx=(4, 0)
+            row=16, column=0, columnspan=4, sticky="ew", pady=(6, 0)
         )
         ttk.Label(card, textvariable=self.c_plane_status_var, style="CardMuted.TLabel", wraplength=430).grid(
             row=17, column=0, columnspan=4, sticky="w", pady=(5, 0)
@@ -723,25 +721,52 @@ class MainWindow:
         ttk.Entry(card, textvariable=self.c_replica_var, width=10).grid(row=22, column=1, sticky="ew", pady=(5, 0), padx=(0, 6))
         ttk.Label(card, text="Repetición", style="Input.TLabel").grid(row=22, column=2, sticky="w", pady=(5, 0), padx=(4, 0))
         ttk.Entry(card, textvariable=self.c_repetition_var, width=10).grid(row=22, column=3, sticky="ew", pady=(5, 0))
-        ttk.Label(card, text="Posición rail (mm)", style="Input.TLabel").grid(row=23, column=0, sticky="w", pady=(4, 0))
+        ttk.Label(card, text="Posición rail (mm, opcional)", style="Input.TLabel").grid(row=23, column=0, sticky="w", pady=(4, 0))
         ttk.Entry(card, textvariable=self.c_position_var, width=10).grid(row=23, column=1, sticky="ew", pady=(4, 0), padx=(0, 6))
-        ttk.Label(card, text="Offset (mm)", style="Input.TLabel").grid(row=23, column=2, sticky="w", pady=(4, 0), padx=(4, 0))
-        ttk.Entry(card, textvariable=self.c_offset_var, width=10).grid(row=23, column=3, sticky="ew", pady=(4, 0))
-        ttk.Label(card, textvariable=self.c_inputs_status_var, style="CardMuted.TLabel", wraplength=430).grid(row=24, column=0, columnspan=4, sticky="w", pady=(5, 0))
+        ttk.Label(card, text="Solo trazabilidad; el plano se define arriba", style="CardMuted.TLabel").grid(
+            row=23, column=2, columnspan=2, sticky="w", pady=(4, 0), padx=(4, 0)
+        )
+        ttk.Label(card, text="Eje imagen / tolerancia (°)", style="Input.TLabel").grid(
+            row=24, column=0, columnspan=2, sticky="w", pady=(5, 0)
+        )
+        c_axis_tolerance = ttk.Frame(card, style="Card.TFrame")
+        c_axis_tolerance.grid(row=24, column=2, columnspan=2, sticky="ew", pady=(5, 0))
+        c_axis_tolerance.columnconfigure(0, weight=1)
+        c_axis_tolerance.columnconfigure(1, weight=1)
+        ttk.Entry(c_axis_tolerance, textvariable=self.axis_angle_var, width=7).grid(
+            row=0, column=0, sticky="ew", padx=(0, 2)
+        )
+        ttk.Entry(c_axis_tolerance, textvariable=self.depth_section_tolerance_var, width=7).grid(
+            row=0, column=1, sticky="ew", padx=(2, 0)
+        )
+        ttk.Label(card, text="Máx. error validación (mm / %)", style="Input.TLabel").grid(
+            row=25, column=0, columnspan=2, sticky="w", pady=(5, 0)
+        )
+        c_validation_limits = ttk.Frame(card, style="Card.TFrame")
+        c_validation_limits.grid(row=25, column=2, columnspan=2, sticky="ew", pady=(5, 0))
+        c_validation_limits.columnconfigure(0, weight=1)
+        c_validation_limits.columnconfigure(1, weight=1)
+        ttk.Entry(c_validation_limits, textvariable=self.c_validation_absolute_error_var, width=7).grid(
+            row=0, column=0, sticky="ew", padx=(0, 2)
+        )
+        ttk.Entry(c_validation_limits, textvariable=self.c_validation_percentage_error_var, width=7).grid(
+            row=0, column=1, sticky="ew", padx=(2, 0)
+        )
+        ttk.Label(card, textvariable=self.c_inputs_status_var, style="CardMuted.TLabel", wraplength=430).grid(row=26, column=0, columnspan=4, sticky="w", pady=(5, 0))
         self.calculate_c_button = ttk.Button(card, text="Calcular C", style="Action.TButton", command=self._calculate_c)
-        self.calculate_c_button.grid(row=25, column=0, columnspan=2, sticky="ew", pady=(7, 0), padx=(0, 4))
+        self.calculate_c_button.grid(row=27, column=0, columnspan=2, sticky="ew", pady=(7, 0), padx=(0, 4))
         self.validate_c_button = ttk.Button(card, text="Registrar validación…", style="Action.TButton", command=self._record_c_validation)
-        self.validate_c_button.grid(row=25, column=2, columnspan=2, sticky="ew", pady=(7, 0), padx=(4, 0))
+        self.validate_c_button.grid(row=27, column=2, columnspan=2, sticky="ew", pady=(7, 0), padx=(4, 0))
         self.sensitivity_c_button = ttk.Button(card, text="Sensibilidad…", style="Action.TButton", command=self._run_c_sensitivity)
-        self.sensitivity_c_button.grid(row=26, column=0, columnspan=4, sticky="ew", pady=(5, 0))
+        self.sensitivity_c_button.grid(row=28, column=0, columnspan=4, sticky="ew", pady=(5, 0))
         ttk.Button(card, text="Aplicar puerto escrito", style="Action.TButton", command=self._apply_c_port_fields).grid(
-            row=27, column=0, columnspan=2, sticky="ew", pady=(5, 0), padx=(0, 4)
+            row=29, column=0, columnspan=2, sticky="ew", pady=(5, 0), padx=(0, 4)
         )
         ttk.Button(card, text="Cargar plano YAML…", style="Action.TButton", command=self._load_c_plane_yaml).grid(
-            row=27, column=2, columnspan=2, sticky="ew", pady=(5, 0), padx=(4, 0)
+            row=29, column=2, columnspan=2, sticky="ew", pady=(5, 0), padx=(4, 0)
         )
         for variable in (
-            self.c_replica_var, self.c_repetition_var, self.c_position_var, self.c_offset_var,
+            self.c_replica_var, self.c_repetition_var, self.c_position_var,
             self.c_d_var, self.c_t_var, self.c_nx_var, self.c_ny_var, self.c_nz_var,
             self.c_na_var, self.c_ng_var, self.c_nw_var, self.c_plane_x_var, self.c_plane_y_var,
             self.c_plane_z_var, self.c_plane_nx_var, self.c_plane_ny_var, self.c_plane_nz_var,
@@ -1130,6 +1155,10 @@ class MainWindow:
             notes.append("normal normalizada")
         if port.lens_distance_approximation:
             notes.append("aproximación lente–vidrio")
+        if port.parameter_standard_deviations is not None:
+            notes.append("incertidumbres Calibmar")
+        if port.water_temperature_c is not None or port.water_salinity_ppt is not None:
+            notes.append("condiciones del agua registradas")
         suffix = f" · {', '.join(notes)}" if notes else ""
         self.c_port_status_var.set(
             f"{port.source} · d={port.interface_distance_mm:g} mm · vidrio={port.glass_thickness_mm:g} mm · "
@@ -1182,6 +1211,7 @@ class MainWindow:
 
     def _apply_c_port_fields(self) -> None:
         try:
+            current = self.c_flat_port
             port = make_flat_port_parameters(
                 normal_camera=(
                     self._float_value(self.c_nx_var.get(), "Normal del puerto x"),
@@ -1194,6 +1224,11 @@ class MainWindow:
                 n_glass=self._float_value(self.c_ng_var.get(), "Índice del vidrio"),
                 n_water=self._float_value(self.c_nw_var.get(), "Índice del agua"),
                 source="manual_UI_center_of_projection",
+                water_temperature_c=(
+                    None if current is None else current.water_temperature_c
+                ),
+                water_salinity_ppt=(None if current is None else current.water_salinity_ppt),
+                water_pressure_dbar=(None if current is None else current.water_pressure_dbar),
             )
         except (TypeError, ValueError, RefractivePortError) as exc:
             self._show_error(f"Parámetros manuales del puerto inválidos: {exc}")
@@ -1245,7 +1280,13 @@ class MainWindow:
                 section.get("normal_camera"),
                 source=str(section.get("source", Path(path).name)),
                 plane_id=str(section.get("plane_id", Path(path).stem)),
+                coordinate_frame=str(
+                    section.get("coordinate_frame", "physical_camera_refractive")
+                ),
             )
+            stored_hash = section.get("plane_hash")
+            if stored_hash is not None and str(stored_hash) != plane.plane_hash:
+                raise RefractivePortError("El hash del plano de medición no coincide.")
         except (OSError, yaml.YAMLError, TypeError, ValueError, RefractivePortError) as exc:
             self._show_error(f"No se pudo cargar el plano C: {exc}")
             return
@@ -1260,28 +1301,6 @@ class MainWindow:
         self.status_var.set(f"Plano C cargado: {Path(path).name}.")
         self._refresh_calculate_states()
 
-    def _use_c_rail_plane(self) -> None:
-        if self.b_rail_reference is None:
-            self._show_error("Cargue primero la referencia geométrica cámara–rail de B.")
-            return
-        try:
-            position = self._float_value(self.c_position_var.get(), "Posición del rail")
-            offset = self._float_value(self.c_offset_var.get(), "Offset del plano") if self.c_offset_var.get().strip() else 0.0
-            plane = measurement_plane_from_rail(self.b_rail_reference, position, offset)
-        except (TypeError, ValueError, RailGeometryError, RefractivePortError) as exc:
-            self._show_error(f"No se pudo construir el plano C desde B: {exc}")
-            return
-        self.c_measurement_plane = plane
-        self.c_plane_x_var.set(f"{plane.point_camera_mm[0]:g}")
-        self.c_plane_y_var.set(f"{plane.point_camera_mm[1]:g}")
-        self.c_plane_z_var.set(f"{plane.point_camera_mm[2]:g}")
-        self.c_plane_nx_var.set(f"{plane.normal_camera[0]:g}")
-        self.c_plane_ny_var.set(f"{plane.normal_camera[1]:g}")
-        self.c_plane_nz_var.set(f"{plane.normal_camera[2]:g}")
-        self.c_plane_status_var.set(f"Plano heredado de B · {plane.plane_id} · z/posición {position:g} mm")
-        self.status_var.set("Plano C construido con la geometría del rail de B.")
-        self._refresh_calculate_states()
-
     def _calculate_c(self) -> None:
         missing = self._c_missing_inputs()
         if missing:
@@ -1289,6 +1308,11 @@ class MainWindow:
             return
         assert self.image_bgr is not None and self.image_path is not None
         assert self.c_air_profile is not None and self.c_flat_port is not None and self.c_measurement_plane is not None
+        try:
+            longitudinal_axis, depth_tolerance = self._direct_morphometry_parameters()
+        except (MeasurementError, ValueError) as exc:
+            self._show_error(str(exc))
+            return
         self.result_c = measure_c_safe(
             self.image_path.stem,
             self.points,
@@ -1298,6 +1322,8 @@ class MainWindow:
             replica_id=self.c_replica_var.get().strip(),
             repetition=self.c_repetition_var.get().strip() or None,
             image_shape=self.image_bgr.shape,
+            longitudinal_axis_px=longitudinal_axis,
+            maximum_depth_section_angle_degrees=depth_tolerance,
         )
         self.results_panel.set_results(self.result_a, self.result_a_prime, self.result_b, self.result_c)
         self._refresh_calculate_states()
@@ -1306,7 +1332,7 @@ class MainWindow:
         else:
             self.status_var.set(
                 f"Método C calculado: LT {self.result_c.total_length_mm:.3f} mm · "
-                f"PC {self.result_c.body_depth_mm:.3f} mm · {self.result_c.quality.status}."
+                f"PC {_format_optional(self.result_c.body_depth_mm)} mm · {self.result_c.quality.status}."
             )
 
     def _record_c_validation(self) -> None:
@@ -1331,6 +1357,18 @@ class MainWindow:
             return
         try:
             rail_position = float(self.c_position_var.get()) if self.c_position_var.get().strip() else None
+            absolute_text = self.c_validation_absolute_error_var.get().strip()
+            percentage_text = self.c_validation_percentage_error_var.get().strip()
+            maximum_absolute_error = (
+                None
+                if not absolute_text
+                else self._float_value(absolute_text, "Error absoluto máximo de validación C")
+            )
+            maximum_percentage_error = (
+                None
+                if not percentage_text
+                else self._float_value(percentage_text, "Error porcentual máximo de validación C")
+            )
             record = validate_known_segment_c(
                 self.result_c.image_id,
                 self.points["p1"],
@@ -1342,20 +1380,38 @@ class MainWindow:
                 pattern_id=pattern_id,
                 rail_position_mm=rail_position,
                 location=location,
+                maximum_absolute_error_mm=maximum_absolute_error,
+                maximum_percentage_error=maximum_percentage_error,
             )
             self.c_validation_records.append(record)
+            compatible_records = [
+                item
+                for item in self.c_validation_records
+                if item.calibration_profile_hash == self.result_c.calibration_profile_hash
+                and item.calibration_context_hash == self.result_c.calibration_context_hash
+                and item.flat_port_hash == self.result_c.flat_port_hash
+                and item.measurement_plane_hash == self.result_c.measurement_plane_hash
+            ]
+            self.result_c = apply_physical_validations_to_c_result(
+                self.result_c, compatible_records
+            )
             paths = export_c_validation(self.c_validation_records, "results")
         except (ValueError, OSError) as exc:
             self._show_error(f"No se pudo registrar la validación C: {exc}")
             return
         self.status_var.set(
             f"Validación C registrada: estimado {record.estimated_length_mm:.3f} mm; "
-            f"error {record.signed_error_mm:+.3f} mm. Exportada en {paths['csv']}."
+            f"error {record.signed_error_mm:+.3f} mm · registro {record.quality_status} · "
+            f"protocolo {self.result_c.quality.status}. "
+            f"Exportada en {paths['csv']}."
         )
-        if record.quality_status != "PASS_CANDIDATE":
+        self.results_panel.set_results(
+            self.result_a, self.result_a_prime, self.result_b, self.result_c
+        )
+        if record.quality_status == "FAIL":
             messagebox.showwarning(
-                "C continúa pendiente",
-                f"El error absoluto es {abs(record.percentage_error):.3f} %, mayor que el criterio inicial de 1 %. "
+                "Validación C fallida",
+                f"El error absoluto es {abs(record.percentage_error):.3f} %. "
                 "Revise geometría, distancia de interfaz, espesor, índices y plano antes de comparar peces.",
                 parent=self.root,
             )
@@ -1368,6 +1424,7 @@ class MainWindow:
             self._show_error("Cargue una imagen antes de ejecutar sensibilidad C.")
             return
         try:
+            longitudinal_axis, depth_tolerance = self._direct_morphometry_parameters()
             points = sensitivity_c(
                 self.image_path.stem,
                 self.points,
@@ -1375,6 +1432,8 @@ class MainWindow:
                 self.c_flat_port,
                 self.c_measurement_plane,
                 replica_id=self.c_replica_var.get().strip() or "sensitivity",
+                longitudinal_axis_px=longitudinal_axis,
+                maximum_depth_section_angle_degrees=depth_tolerance,
             )
             output = Path("results") / f"{self.image_path.stem}_C_sensitivity.json"
             output.parent.mkdir(parents=True, exist_ok=True)
@@ -1399,8 +1458,8 @@ class MainWindow:
             missing.append("plano de medición")
         if len(self.points) != 4:
             missing.append("puntos p1–p4")
-        if self.c_units_var.get().strip().lower() not in {"mm", "millimeter", "millimeters", "cm", "m"}:
-            missing.append("unidad de distancia")
+        if self.c_units_var.get().strip().lower() not in {"mm", "millimeter", "millimeters"}:
+            missing.append("unidades internas en mm")
         if self.c_air_profile is not None and self.image_bgr is not None:
             actual = (self.image_bgr.shape[1], self.image_bgr.shape[0])
             if actual != self.c_air_profile.resolution:

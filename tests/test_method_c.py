@@ -11,13 +11,19 @@ from fish_morphometry.geometry.refractive_port import (
     RefractivePortError,
     make_flat_port_parameters,
     make_measurement_plane,
+    measurement_plane_from_rail,
     trace_refracted_ray,
 )
 from fish_morphometry.geometry.snells_law import TotalInternalReflectionError, refract_direction
 from fish_morphometry.methods.c import measure_c, measure_c_safe
 from fish_morphometry.measurements.quality import MeasurementError
 from fish_morphometry.io.exporters import export_c_result, export_results_csv
-from fish_morphometry.validation.c_validation import sensitivity_c, validate_known_segment_c
+from fish_morphometry.validation.c_validation import (
+    apply_physical_validation_to_c_result,
+    apply_physical_validations_to_c_result,
+    sensitivity_c,
+    validate_known_segment_c,
+)
 
 
 def _air_profile(resolution=(200, 200)):
@@ -105,6 +111,78 @@ class MethodCTests(unittest.TestCase):
         self.assertAlmostEqual(result.total_length_mm, 20.0)
         self.assertAlmostEqual(result.body_depth_mm, 30.0)
 
+    def test_c_uses_anatomical_projection_and_invalidates_oblique_depth_section(self):
+        profile = _air_profile()
+        port = make_flat_port_parameters(
+            normal_camera=(0, 0, 1),
+            interface_distance_mm=100,
+            glass_thickness_mm=0,
+            n_air=1,
+            n_glass=1,
+            n_water=1,
+        )
+        points = {
+            "p1": (100, 100),
+            "p2": (104, 104),
+            "p3": (120, 85),
+            "p4": (125, 125),
+        }
+        result = measure_c(
+            "projected",
+            points,
+            profile,
+            port,
+            make_measurement_plane((0, 0, 200), (0, 0, 1)),
+            replica_id="r",
+            longitudinal_axis_px=(1, 0),
+            maximum_depth_section_angle_degrees=5,
+        )
+        self.assertAlmostEqual(result.total_length_mm, 8.0)
+        self.assertAlmostEqual(result.total_length_euclidean_mm, np.sqrt(128.0))
+        self.assertIsNone(result.body_depth_mm)
+        self.assertAlmostEqual(result.body_depth_section_offset_mm, 10.0)
+        self.assertAlmostEqual(result.body_depth_section_angle_degrees, 7.125016, places=5)
+        self.assertFalse(result.body_depth_valid)
+
+        accepted = measure_c(
+            "projected-accepted",
+            points,
+            profile,
+            port,
+            make_measurement_plane((0, 0, 200), (0, 0, 1)),
+            replica_id="r",
+            longitudinal_axis_px=(1, 0),
+            maximum_depth_section_angle_degrees=8,
+        )
+        self.assertAlmostEqual(accepted.body_depth_mm, 80.0)
+        self.assertTrue(accepted.body_depth_valid)
+
+    def test_c_projection_is_invariant_under_joint_image_axis_rotation(self):
+        profile = _air_profile()
+        port = make_flat_port_parameters(
+            normal_camera=(0, 0, 1), interface_distance_mm=100, glass_thickness_mm=0,
+            n_air=1, n_glass=1, n_water=1,
+        )
+        plane = make_measurement_plane((0, 0, 200), (0, 0, 1))
+        baseline = measure_c(
+            "baseline",
+            {"p1": (100, 100), "p2": (104, 104), "p3": (120, 85), "p4": (125, 125)},
+            profile, port, plane, replica_id="r", longitudinal_axis_px=(1, 0),
+            maximum_depth_section_angle_degrees=8,
+        )
+        rotated = measure_c(
+            "rotated",
+            {"p1": (100, 100), "p2": (96, 104), "p3": (115, 120), "p4": (75, 125)},
+            profile, port, plane, replica_id="r", longitudinal_axis_px=(0, 1),
+            maximum_depth_section_angle_degrees=8,
+        )
+        self.assertAlmostEqual(rotated.total_length_mm, baseline.total_length_mm)
+        self.assertAlmostEqual(rotated.body_depth_mm, baseline.body_depth_mm)
+        self.assertAlmostEqual(
+            rotated.body_depth_section_angle_degrees,
+            baseline.body_depth_section_angle_degrees,
+        )
+
     def test_parallel_plane_and_resolution_are_rejected(self):
         profile = _air_profile()
         port = _port()
@@ -128,13 +206,21 @@ class MethodCTests(unittest.TestCase):
                 replica_id="r",
                 image_shape=(201, 200, 3),
             )
+        with self.assertRaisesRegex(MeasurementError, "réplica"):
+            measure_c(
+                "missing-replica",
+                {"p1": (100, 100), "p2": (110, 100), "p3": (100, 110), "p4": (100, 125)},
+                profile,
+                port,
+                make_measurement_plane((0, 0, 200), (0, 0, 1)),
+            )
 
     def test_changing_plane_depth_changes_metric_result(self):
         profile = _air_profile()
         port = _port()
         points = {"p1": (100, 100), "p2": (110, 100), "p3": (100, 110), "p4": (100, 125)}
-        near = measure_c("near", points, profile, port, make_measurement_plane((0, 0, 150), (0, 0, 1)), image_shape=(200, 200, 3))
-        far = measure_c("far", points, profile, port, make_measurement_plane((0, 0, 250), (0, 0, 1)), image_shape=(200, 200, 3))
+        near = measure_c("near", points, profile, port, make_measurement_plane((0, 0, 150), (0, 0, 1)), replica_id="r", image_shape=(200, 200, 3))
+        far = measure_c("far", points, profile, port, make_measurement_plane((0, 0, 250), (0, 0, 1)), replica_id="r", image_shape=(200, 200, 3))
         self.assertGreater(far.total_length_mm, near.total_length_mm)
 
     def test_safe_c_preserves_error_and_validation_reports_signed_error(self):
@@ -167,12 +253,73 @@ class MethodCTests(unittest.TestCase):
         self.assertAlmostEqual(record.signed_error_mm, 0.4017988, places=5)
         self.assertGreater(record.percentage_error, 0.0)
 
+        malformed = measure_c_safe(
+            "malformed",
+            None,
+            profile,
+            port,
+            plane,
+            replica_id="r",
+        )
+        self.assertEqual(malformed.quality.status, "ERROR")
+        self.assertEqual(malformed.points_px, {})
+
+    def test_c_validation_has_pass_fail_hashes_and_links_to_measurement(self):
+        profile = _air_profile()
+        port = _port()
+        plane = make_measurement_plane((0, 0, 200), (0, 0, 1), plane_id="fish-plane")
+        points = {"p1": (100, 100), "p2": (110, 100), "p3": (100, 110), "p4": (100, 125)}
+        measurement = measure_c(
+            "fish", points, profile, port, plane, replica_id="r"
+        )
+        passed = validate_known_segment_c(
+            "bar", (100, 100), (110, 100), 17.4, profile, port, plane,
+            maximum_percentage_error=1.0,
+        )
+        self.assertEqual(passed.quality_status, "PASS")
+        self.assertTrue(passed.passed)
+        linked = apply_physical_validation_to_c_result(measurement, passed)
+        self.assertEqual(linked.quality.status, "PENDING_VALIDATION")
+
+        left = validate_known_segment_c(
+            "bar-left", (100, 100), (110, 100), 17.4, profile, port, plane,
+            location="left", maximum_percentage_error=1.0,
+        )
+        right = validate_known_segment_c(
+            "bar-right", (100, 100), (110, 100), 17.4, profile, port, plane,
+            location="right", maximum_percentage_error=1.0,
+        )
+        linked = apply_physical_validations_to_c_result(
+            measurement, (passed, left, right)
+        )
+        self.assertEqual(linked.quality.status, "PASS")
+        self.assertTrue(linked.validation_record_hash)
+
+        failed = validate_known_segment_c(
+            "bar", (100, 100), (110, 100), 10.0, profile, port, plane,
+            maximum_percentage_error=1.0,
+        )
+        self.assertEqual(failed.quality_status, "FAIL")
+        self.assertFalse(failed.passed)
+        other_plane_record = validate_known_segment_c(
+            "other-plane", (100, 100), (110, 100), 17.4, profile, port,
+            make_measurement_plane((0, 0, 210), (0, 0, 1), plane_id="other"),
+            maximum_percentage_error=1.0,
+        )
+        with self.assertRaisesRegex(ValueError, "otro plano"):
+            apply_physical_validation_to_c_result(measurement, other_plane_record)
+
+    def test_b_effective_rail_plane_is_rejected_for_c(self):
+        with self.assertRaisesRegex(RefractivePortError, "pinhole efectiva"):
+            measurement_plane_from_rail(object(), 100.0, 0.0)
+
     def test_calibmar_flatport_requires_units_and_imports_geometry(self):
         payload = {
             "model": "OPENCV",
             "parameters": [100, 100, 100, 100, 0, 0, 0, 0],
             "non_svp_model": "FLATPORT",
             "non_svp_parameters": [0, 0, 1, 100, 10, 1.0, 1.5, 1.333],
+            "non_svp_est_std_dev": [0.001, 0.001, 0.001, 0.5, 0.2, 0, 0, 0.002],
             "width": 200,
             "height": 200,
         }
@@ -185,6 +332,8 @@ class MethodCTests(unittest.TestCase):
             self.assertEqual(imported.air_profile.resolution, (200, 200))
             self.assertAlmostEqual(imported.flat_port.interface_distance_mm, 100.0)
             self.assertTrue(imported.flat_port.normal_was_normalized is False)
+            self.assertEqual(len(imported.flat_port.parameter_standard_deviations), 8)
+            self.assertAlmostEqual(imported.flat_port.parameter_standard_deviations[3], 0.5)
 
     def test_sensitivity_does_not_mutate_saved_port(self):
         profile = _air_profile()
@@ -192,9 +341,27 @@ class MethodCTests(unittest.TestCase):
         plane = make_measurement_plane((0, 0, 200), (0, 0, 1))
         points = {"p1": (100, 100), "p2": (110, 100), "p3": (100, 110), "p4": (100, 125)}
         rows = sensitivity_c("fish", points, profile, port, plane)
-        self.assertEqual(len(rows), 8)
+        self.assertEqual(len(rows), 16)
         self.assertEqual(port.interface_distance_mm, 100.0)
         self.assertEqual(port.n_water, 1.333)
+
+    def test_sensitivity_handles_invalid_body_depth(self):
+        profile = _air_profile()
+        port = make_flat_port_parameters(
+            normal_camera=(0, 0, 1), interface_distance_mm=100, glass_thickness_mm=0,
+            n_air=1, n_glass=1, n_water=1,
+        )
+        plane = make_measurement_plane((0, 0, 200), (0, 0, 1))
+        points = {
+            "p1": (100, 100), "p2": (104, 104),
+            "p3": (120, 85), "p4": (125, 125),
+        }
+        rows = sensitivity_c(
+            "fish-invalid-depth", points, profile, port, plane,
+            maximum_depth_section_angle_degrees=5,
+        )
+        self.assertTrue(rows)
+        self.assertTrue(all(row.delta_body_depth_mm is None for row in rows))
 
     def test_c_json_and_csv_export_include_geometry_and_rays(self):
         result = measure_c(
@@ -213,6 +380,8 @@ class MethodCTests(unittest.TestCase):
             csv_text = csv_path.read_text(encoding="utf-8")
             self.assertIn('"port_normal_camera"', json_text)
             self.assertIn('"v_water"', json_text)
+            self.assertIn('"longitudinal_axis_camera"', json_text)
+            self.assertIn('"flat_port_hash"', json_text)
             self.assertIn("c_geometry", csv_text)
             self.assertIn("PENDING_VALIDATION", csv_text)
 

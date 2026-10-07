@@ -224,6 +224,10 @@ class CMeasurementResult:
     v_glass: dict[str, Point3D]
     v_water: dict[str, Point3D]
     points_camera_mm: dict[str, Point3D]
+    longitudinal_axis_px: Point | None
+    longitudinal_axis_camera: Point3D | None
+    normal_axis_camera: Point3D | None
+    maximum_depth_section_angle_degrees: float | None
     measurement_plane_point_camera_mm: Point3D
     measurement_plane_normal_camera: Point3D
     port_normal_camera: Point3D
@@ -235,7 +239,17 @@ class CMeasurementResult:
     units: str
     total_length_mm: float | None
     body_depth_mm: float | None
+    total_length_euclidean_mm: float | None
+    body_depth_euclidean_mm: float | None
+    body_depth_section_offset_mm: float | None
+    body_depth_section_angle_degrees: float | None
+    body_depth_valid: bool | None
+    calibration_context_hash: str
+    flat_port_hash: str
+    measurement_plane_id: str
+    measurement_plane_hash: str
     quality: QualityReport
+    validation_record_hash: str | None = None
     exclusion_reason: str | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
@@ -262,6 +276,20 @@ class CMeasurementResult:
                 "v_water": points3d(self.v_water),
             },
             "points_camera_mm": points3d(self.points_camera_mm),
+            "longitudinal_axis_px": (
+                None if self.longitudinal_axis_px is None else list(self.longitudinal_axis_px)
+            ),
+            "longitudinal_axis_camera": (
+                None
+                if self.longitudinal_axis_camera is None
+                else list(self.longitudinal_axis_camera)
+            ),
+            "normal_axis_camera": (
+                None if self.normal_axis_camera is None else list(self.normal_axis_camera)
+            ),
+            "maximum_depth_section_angle_degrees": (
+                self.maximum_depth_section_angle_degrees
+            ),
             "geometry": {
                 "normal": list(self.port_normal_camera),
                 "port_normal_camera": list(self.port_normal_camera),
@@ -272,14 +300,32 @@ class CMeasurementResult:
                 "n_air": self.n_air,
                 "n_glass": self.n_glass,
                 "n_water": self.n_water,
+                "flat_port_hash": self.flat_port_hash,
+                "measurement_plane_id": self.measurement_plane_id,
+                "measurement_plane_hash": self.measurement_plane_hash,
                 "units": self.units,
             },
             "measurements": {
                 "total_length_mm": self.total_length_mm,
                 "body_depth_mm": self.body_depth_mm,
+                "total_length_euclidean_mm": self.total_length_euclidean_mm,
+                "body_depth_euclidean_mm": self.body_depth_euclidean_mm,
+                "body_depth_section_offset_mm": self.body_depth_section_offset_mm,
+                "body_depth_section_angle_degrees": self.body_depth_section_angle_degrees,
+                "body_depth_valid": self.body_depth_valid,
             },
             "total_length_mm": self.total_length_mm,
             "body_depth_mm": self.body_depth_mm,
+            "total_length_euclidean_mm": self.total_length_euclidean_mm,
+            "body_depth_euclidean_mm": self.body_depth_euclidean_mm,
+            "body_depth_section_offset_mm": self.body_depth_section_offset_mm,
+            "body_depth_section_angle_degrees": self.body_depth_section_angle_degrees,
+            "body_depth_valid": self.body_depth_valid,
+            "calibration_context_hash": self.calibration_context_hash,
+            "flat_port_hash": self.flat_port_hash,
+            "measurement_plane_id": self.measurement_plane_id,
+            "measurement_plane_hash": self.measurement_plane_hash,
+            "validation_record_hash": self.validation_record_hash,
             "quality": self.quality.to_dict(),
             "exclusion_reason": self.exclusion_reason,
             "metadata": dict(self.metadata),

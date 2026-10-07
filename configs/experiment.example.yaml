@@ -63,12 +63,20 @@ quality:
 # method_c:
 #   air_calibration_profile: null  # Perfil nativo air_calibration.v1 o Calibmar FLATPORT.
 #   flat_port_yaml: null           # flat_port.units debe ser "mm".
-#   measurement_plane_yaml: null   # point_camera_mm + normal_camera.
+#   measurement_plane_yaml: null   # Marco physical_camera_refractive; no reutilizar pose efectiva B.
 #   interface_distance_mm: null    # Centro de proyección → primera interfaz.
 #   glass_thickness_mm: null
 #   n_air: 1.000
 #   n_glass: null
 #   n_water: null                  # Depende de temperatura/salinidad.
+#   water_temperature_c: null
+#   water_salinity_ppt: null
+#   water_pressure_dbar: null
+#   longitudinal_axis_px: [1.0, 0.0]
+#   maximum_depth_section_angle_degrees: 5.0
+#   physical_validation:
+#     maximum_absolute_error_mm: null
+#     maximum_percentage_error: 1.0
 
 paths:
   images: null  # Ruta opcional a las imágenes del ensayo.

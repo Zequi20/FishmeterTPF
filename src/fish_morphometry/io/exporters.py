@@ -72,6 +72,9 @@ def export_results_csv(results: Iterable[_Result], path: str | Path) -> Path:
         "calibration_profile_id",
         "calibration_profile_hash",
         "calibration_context_hash",
+        "flat_port_hash",
+        "measurement_plane_id",
+        "measurement_plane_hash",
         "rail_reference_id",
         "rail_reference_hash",
         "validation_record_hash",
@@ -146,6 +149,9 @@ def export_results_csv(results: Iterable[_Result], path: str | Path) -> Path:
                     "calibration_context_hash": payload.get(
                         "calibration_context_hash", ""
                     ),
+                    "flat_port_hash": payload.get("flat_port_hash", ""),
+                    "measurement_plane_id": payload.get("measurement_plane_id", ""),
+                    "measurement_plane_hash": payload.get("measurement_plane_hash", ""),
                     "rail_reference_id": payload.get("rail_reference_id", ""),
                     "rail_reference_hash": payload.get("rail_reference_hash", ""),
                     "validation_record_hash": payload.get("validation_record_hash", ""),

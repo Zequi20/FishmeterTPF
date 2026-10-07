@@ -81,7 +81,7 @@ La suite automatizada está organizada en `tests/unit`, `tests/integration` y fi
 5. Calcula A y/o A′. Ambos reciben exactamente el mismo diccionario de puntos y
    el mismo eje anatómico de imagen.
 6. Para B, carga o crea el perfil de calibración, carga o crea la referencia cámara–rail, introduce el ID de réplica, posición del carrito y desplazamiento físico hasta el plano de simetría. El botón de B permanece deshabilitado si falta cualquiera de esos datos.
-7. Para C, abre su pestaña, carga un perfil de calibración en aire o crea uno con al menos 15 vistas, importa un YAML Calibmar `FLATPORT` o un `flat_port` manual, y define el plano de simetría explícito o desde la geometría del rail de B. El cálculo permanece `PENDING_VALIDATION` hasta validar físicamente el modelo.
+7. Para C, abre su pestaña, carga un perfil de calibración en aire o crea uno con al menos 15 vistas, importa un YAML Calibmar `FLATPORT` o un `flat_port` manual, y define el plano de simetría en el marco físico de la cámara refractiva. El cálculo permanece `PENDING_VALIDATION` hasta validar físicamente el modelo.
 8. Revisa la tabla comparativa y exporta. El CSV maestro incluye A, A′, B y C cuando están disponibles; cualquiera de B o C puede exportarse por separado.
 
 El selector manual convierte los clics desde la imagen redimensionada a coordenadas de la imagen original antes de guardar o calcular.
@@ -158,22 +158,24 @@ La limitación que permanece es física: B es un modelo pinhole efectivo ajustad
 
 ## Método C: puerto plano explícito
 
-C recibe exactamente el mismo conjunto de puntos `p1`–`p4` anotado para A, A′ y B. No vuelve a segmentar la imagen, no calcula una escala global `mm/píxel` y no consulta ArUco. El resultado es:
+C recibe exactamente el mismo conjunto de puntos `p1`–`p4` anotado para A, A′ y B. No vuelve a segmentar la imagen, no calcula una escala global `mm/píxel` y no consulta ArUco. El eje longitudinal de imagen se transforma al plano mediante el mismo trazado refractivo que los puntos. Con `u` longitudinal, `s` normal al plano y `v = normalize(s × u)`, el resultado es:
 
 ```text
-LT_C_mm = ||P2 - P1||
-PC_C_mm = ||P4 - P3||
+LT_C_mm = abs(dot(P2 - P1, u))
+PC_C_mm = abs(dot(P4 - P3, v))
 ```
+
+`PC_C_mm` solo se informa si el componente longitudinal de `P4-P3` mantiene la sección dentro de la tolerancia angular configurada. Las distancias euclidianas, el offset de sección y su ángulo se conservan como diagnósticos.
 
 La convención de cámara es `X` hacia la derecha de la imagen, `Y` hacia abajo y `Z` desde la cámara hacia la pecera. El centro de proyección es el origen. El puerto usa las interfaces paralelas `n·X = d` y `n·X = d + t_g`, donde `d` es la distancia desde el centro de proyección a la primera interfaz y `t_g` es el espesor del vidrio. Una distancia medida desde el frente de la lente no debe introducirse como `d` salvo que se marque expresamente como aproximación (`lens_distance_approximation`) y se documente su incertidumbre.
 
 ### Calibración en aire
 
-En la pestaña C se seleccionan imágenes del tablero, esquinas internas, tamaño físico y unidad (`mm`, `cm` o `m`). Se refinan las esquinas con `cornerSubPix` y se ejecuta `cv2.calibrateCameraExtended`. El perfil guarda `K_air`, `D_air`, resolución, `rvec`/`tvec` y error por vista, RMS global, fecha, versión de OpenCV, imágenes aceptadas/rechazadas y hash. Se solicitan como mínimo 15 vistas (preferiblemente unas 20); RMS menor que 0,5 px es solo un objetivo de referencia y nunca declara válido C por sí mismo.
+En la pestaña C se seleccionan imágenes del tablero, esquinas internas, tamaño físico y unidad (`mm`, `cm` o `m`). Se refinan las esquinas con `cornerSubPix` y se ejecuta `cv2.calibrateCameraExtended`. Las vistas con alto error se eliminan iterativamente y se exige diversidad espacial y angular. El perfil guarda `K_air`, `D_air`, resolución, pose, error, centro, área e inclinación por vista, RMS global, imágenes aceptadas/rechazadas, hash de intrínsecos y hash del contexto. Se solicitan como mínimo 15 vistas (preferiblemente unas 20); RMS menor que 0,5 px es solo un objetivo de referencia y nunca declara válido C por sí mismo.
 
 ### Calibmar FLATPORT
 
-Se acepta un YAML con `model`, `parameters`, `non_svp_model: FLATPORT`, `non_svp_parameters: [Nx, Ny, Nz, int_dist, int_thick, na, ng, nw]`, `width` y `height`. `OPENCV`, `FULL_OPENCV`, `PINHOLE`, `SIMPLE_PINHOLE`, `RADIAL` y `SIMPLE_RADIAL` se convierten a `K_air,D_air`. La unidad de `int_dist` e `int_thick` debe declararse explícitamente (no se asume mm); todos los valores geométricos se normalizan internamente a mm. Se rechazan perfiles sin `FLATPORT` y resoluciones incompatibles. Una normal no unitaria se normaliza y el ajuste queda registrado.
+Se acepta un YAML con `model`, `parameters`, `non_svp_model: FLATPORT`, `non_svp_parameters: [Nx, Ny, Nz, int_dist, int_thick, na, ng, nw]`, `width` y `height`. `OPENCV`, `FULL_OPENCV`, `PINHOLE`, `SIMPLE_PINHOLE`, `RADIAL` y `SIMPLE_RADIAL` se convierten a `K_air,D_air`. La unidad de `int_dist` e `int_thick` debe declararse explícitamente (no se asume mm); todos los valores geométricos se normalizan internamente a mm. Si existe `non_svp_est_std_dev`, también se importa y normaliza. `overall_rms` queda identificado como RMS refractivo global, no como RMS exclusivo de aire. Se rechazan perfiles sin `FLATPORT` y resoluciones incompatibles.
 
 La alternativa manual es:
 
@@ -187,27 +189,32 @@ flat_port:
     air: 1.000
     glass: 1.500
     water: 1.333
+  water_conditions:
+    temperature_c: null
+    salinity_ppt: null
+    pressure_dbar: null
 ```
 
 También puede cargarse un plano desde:
 
 ```yaml
 measurement_plane:
+  coordinate_frame: "physical_camera_refractive"
   point_camera_mm: [0.0, 0.0, 300.0]
   normal_camera: [0.0, 0.0, 1.0]
 ```
 
 ### Trazado y calidad
 
-Cada píxel se undistorsiona con `K_air,D_air`, se convierte en `v_air` unitario, se intersecta con la primera interfaz (`q1`), se refracta a `v_glass`, avanza hasta `q2`, se refracta a `v_water` y se intersecta con el plano de medición. Se rechazan rayos paralelos o detrás de una interfaz/plano, normales inválidas, valores no finitos y reflexión interna total. Se conservan `q1`, `q2`, `v_air`, `v_glass`, `v_water`, puntos finales, plano, parámetros físicos y residuos de interfaz para depuración. C empieza siempre con `PENDING_VALIDATION`; una captura imposible queda `ERROR` con su motivo.
+Cada píxel se undistorsiona con `K_air,D_air`, se convierte en `v_air` unitario, se intersecta con la primera interfaz (`q1`), se refracta a `v_glass`, avanza hasta `q2`, se refracta a `v_water` y se intersecta con el plano de medición. Se rechazan rayos paralelos, de incidencia rasante o detrás de una interfaz/plano, normales inválidas, valores no finitos y reflexión interna total. Se conservan ejes anatómicos, diagnósticos euclidianos, hashes de calibración/puerto/plano y la geometría de rayos. C empieza siempre con `PENDING_VALIDATION`; una captura imposible queda `ERROR` con su motivo.
 
-Puede reutilizarse el plano cámara–rail ya construido para B, pero C vuelve a trazar el rayo refractado y no reutiliza el rayo pinhole de B. La tabla de resultados compara A, A′, B y C; los JSON individuales y `results/master.csv` incluyen la misma trazabilidad.
+El plano cámara–rail estimado para B mediante `solvePnP` pertenece al modelo pinhole efectivo y no se reutiliza automáticamente en C. El plano de C debe medirse externamente o calibrarse directamente en `physical_camera_refractive`. La tabla de resultados compara A, A′, B y C; los JSON individuales y `results/master.csv` incluyen la misma trazabilidad.
 
 ### Validación física y sensibilidad
 
-Antes de comparar peces, sumerja una regla o barra con marcas conocidas (10 mm; tramos de 50/100 mm), mida en el centro y laterales del encuadre y repita en varias posiciones del rail. «Registrar validación» guarda `valor_real_mm`, `valor_estimado_mm`, error con signo, absoluto y porcentual, posición del rail, ubicación, perfil y hash en `results/c_physical_validation.json/.csv`. El criterio inicial es error absoluto ≤ 1 %; si no se cumple, el resultado queda pendiente y deben revisarse la geometría, `d`, espesor, índices y plano.
+Antes de comparar peces, sumerja una regla o barra con marcas conocidas (10 mm; tramos de 50/100 mm), mida en el centro y laterales del encuadre y repita en varias posiciones del rail. «Registrar validación» guarda errores, umbrales y hashes de perfil, contexto, puerto y plano en `results/c_physical_validation.json/.csv`. Sin umbrales el estado permanece `PENDING_VALIDATION`; para `PASS` se requieren registros dentro de todos los umbrales en el centro y al menos dos ubicaciones adicionales. Un fallo individual produce `FAIL`. Solo validaciones geométricamente compatibles pueden enlazarse al resultado C.
 
-La herramienta «Sensibilidad…» varía en memoria `d` ±20 %, `n_water` ±0,01, espesor y normal ±1° y exporta el cambio en LT/PC. Nunca modifica el perfil guardado. Las limitaciones conocidas son profundidad del plano, inclinación del puerto, incertidumbre de `d`, índices dependientes de temperatura y cualquier desviación del vidrio respecto a un plano paralelo.
+La herramienta «Sensibilidad…» varía en memoria `d` ±20 %, `n_water` ±0,01, espesor, la normal del puerto en dos direcciones, y la posición/normal del plano. Si Calibmar aporta desviaciones estándar también se evalúan. Exporta cambios absolutos y relativos en LT/PC sin modificar el perfil guardado.
 
 ## Configuración
 

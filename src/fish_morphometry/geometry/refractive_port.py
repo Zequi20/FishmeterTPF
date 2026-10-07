@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
+import json
 import math
 from pathlib import Path
 from typing import Mapping
@@ -28,6 +30,7 @@ class MeasurementPlane:
     normal_camera: tuple[float, float, float]
     source: str = "explicit"
     plane_id: str = "measurement-plane"
+    coordinate_frame: str = "physical_camera_refractive"
 
     def __post_init__(self) -> None:
         try:
@@ -41,6 +44,23 @@ class MeasurementPlane:
         object.__setattr__(self, "normal_camera", normal)
         if not str(self.plane_id).strip():
             raise RefractivePortError("El plano de medición debe tener un ID.")
+        if str(self.coordinate_frame).strip() != "physical_camera_refractive":
+            raise RefractivePortError(
+                "El plano C debe estar expresado en el marco físico de la cámara "
+                "usado por el modelo refractivo."
+            )
+
+    @property
+    def plane_hash(self) -> str:
+        payload = {
+            "plane_id": self.plane_id,
+            "source": self.source,
+            "point_camera_mm": list(self.point_camera_mm),
+            "normal_camera": list(self.normal_camera),
+            "coordinate_frame": self.coordinate_frame,
+        }
+        packed = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(packed).hexdigest()
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -48,6 +68,8 @@ class MeasurementPlane:
             "source": self.source,
             "point_camera_mm": list(self.point_camera_mm),
             "normal_camera": list(self.normal_camera),
+            "coordinate_frame": self.coordinate_frame,
+            "plane_hash": self.plane_hash,
             "units": "mm",
         }
 
@@ -67,6 +89,10 @@ class FlatPortParameters:
     normal_was_normalized: bool = False
     lens_distance_approximation: bool = False
     uncertainty_note: str | None = None
+    parameter_standard_deviations: tuple[float, ...] | None = None
+    water_temperature_c: float | None = None
+    water_salinity_ppt: float | None = None
+    water_pressure_dbar: float | None = None
 
     def __post_init__(self) -> None:
         normalized, adjusted = _validated_normal(self.port_normal)
@@ -106,6 +132,52 @@ class FlatPortParameters:
             raise RefractivePortError(
                 "Una distancia lente–vidrio aproximada requiere uncertainty_note; no se puede tratar como centro de proyección sin advertencia."
             )
+        if self.parameter_standard_deviations is not None:
+            try:
+                deviations = tuple(float(value) for value in self.parameter_standard_deviations)
+            except (TypeError, ValueError) as exc:
+                raise RefractivePortError(
+                    "Las incertidumbres del puerto deben ser numéricas."
+                ) from exc
+            if len(deviations) != 8 or not all(
+                math.isfinite(value) and value >= 0 for value in deviations
+            ):
+                raise RefractivePortError(
+                    "Las incertidumbres del puerto deben contener ocho desviaciones estándar no negativas."
+                )
+            object.__setattr__(self, "parameter_standard_deviations", deviations)
+        for attribute, label, minimum in (
+            ("water_temperature_c", "La temperatura del agua", None),
+            ("water_salinity_ppt", "La salinidad del agua", 0.0),
+            ("water_pressure_dbar", "La presión del agua", 0.0),
+        ):
+            raw = getattr(self, attribute)
+            if raw is None:
+                continue
+            try:
+                value = float(raw)
+            except (TypeError, ValueError) as exc:
+                raise RefractivePortError(f"{label} debe ser numérica.") from exc
+            if not math.isfinite(value) or (minimum is not None and value < minimum):
+                raise RefractivePortError(f"{label} no es válida.")
+            object.__setattr__(self, attribute, value)
+
+    @property
+    def port_hash(self) -> str:
+        payload = {
+            "normal_camera": list(self.port_normal),
+            "interface_distance_mm": self.interface_distance_mm,
+            "glass_thickness_mm": self.glass_thickness_mm,
+            "n_air": self.n_air,
+            "n_glass": self.n_glass,
+            "n_water": self.n_water,
+            "parameter_standard_deviations": self.parameter_standard_deviations,
+            "water_temperature_c": self.water_temperature_c,
+            "water_salinity_ppt": self.water_salinity_ppt,
+            "water_pressure_dbar": self.water_pressure_dbar,
+        }
+        packed = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(packed).hexdigest()
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -123,6 +195,17 @@ class FlatPortParameters:
             "normal_was_normalized": self.normal_was_normalized,
             "lens_distance_approximation": self.lens_distance_approximation,
             "uncertainty_note": self.uncertainty_note,
+            "parameter_standard_deviations": (
+                None
+                if self.parameter_standard_deviations is None
+                else list(self.parameter_standard_deviations)
+            ),
+            "port_hash": self.port_hash,
+            "water_conditions": {
+                "temperature_c": self.water_temperature_c,
+                "salinity_ppt": self.water_salinity_ppt,
+                "pressure_dbar": self.water_pressure_dbar,
+            },
         }
 
 
@@ -174,6 +257,10 @@ def make_flat_port_parameters(
     source: str = "manual",
     lens_distance_approximation: bool = False,
     uncertainty_note: str | None = None,
+    parameter_standard_deviations: object | None = None,
+    water_temperature_c: float | None = None,
+    water_salinity_ppt: float | None = None,
+    water_pressure_dbar: float | None = None,
 ) -> FlatPortParameters:
     try:
         normal = tuple(float(value) for value in np.asarray(normal_camera, dtype=float).reshape(3))
@@ -189,6 +276,17 @@ def make_flat_port_parameters(
         source=source,
         lens_distance_approximation=lens_distance_approximation,
         uncertainty_note=uncertainty_note,
+        parameter_standard_deviations=(
+            None
+            if parameter_standard_deviations is None
+            else tuple(
+                float(value)
+                for value in np.asarray(parameter_standard_deviations, dtype=float).reshape(-1)
+            )
+        ),
+        water_temperature_c=water_temperature_c,
+        water_salinity_ppt=water_salinity_ppt,
+        water_pressure_dbar=water_pressure_dbar,
     )
 
 
@@ -198,13 +296,20 @@ def make_measurement_plane(
     *,
     source: str = "explicit",
     plane_id: str = "measurement-plane",
+    coordinate_frame: str = "physical_camera_refractive",
 ) -> MeasurementPlane:
     try:
         point = tuple(float(v) for v in np.asarray(point_camera_mm, dtype=float).reshape(3))
         normal = tuple(float(v) for v in np.asarray(normal_camera, dtype=float).reshape(3))
     except (TypeError, ValueError) as exc:
         raise RefractivePortError("El plano de medición requiere punto y normal 3D.") from exc
-    return MeasurementPlane(point, normal, source=source, plane_id=plane_id)
+    return MeasurementPlane(
+        point,
+        normal,
+        source=source,
+        plane_id=plane_id,
+        coordinate_frame=coordinate_frame,
+    )
 
 
 def measurement_plane_from_rail(
@@ -212,18 +317,18 @@ def measurement_plane_from_rail(
     capture_rail_position_mm: float,
     replica_plane_offset_mm: float,
 ) -> MeasurementPlane:
-    """Reutiliza la referencia cámara–rail de B sin reutilizar sus rayos."""
+    """Rechaza referencias B efectivas que no pertenecen al marco físico de C.
 
-    from .rail_plane import build_measurement_plane
+    Las referencias actuales de B se obtienen con ``solvePnP`` y un modelo
+    pinhole efectivo subacuático. Sus poses no son intercambiables con el marco
+    de cámara física en aire utilizado por los rayos refractivos de C.
+    """
 
-    point, normal, _delta_z = build_measurement_plane(
-        reference, capture_rail_position_mm, replica_plane_offset_mm
-    )
-    return make_measurement_plane(
-        point,
-        normal,
-        source="rail_reference",
-        plane_id=getattr(reference, "reference_id", "rail-reference") + "-measurement-plane",
+    del reference, capture_rail_position_mm, replica_plane_offset_mm
+    raise RefractivePortError(
+        "La geometría cámara–rail de B usa una pose pinhole efectiva y no puede "
+        "reutilizarse como plano físico de C. Cargue un plano medido o calibrado "
+        "directamente en el marco physical_camera_refractive."
     )
 
 
@@ -248,7 +353,10 @@ def load_manual_flat_port(path: str | Path) -> FlatPortParameters:
     missing += [key for key in ("air", "glass", "water") if key not in indices]
     if missing:
         raise RefractivePortError("Faltan parámetros del puerto plano: " + ", ".join(missing) + ".")
-    return make_flat_port_parameters(
+    water_conditions = flat.get("water_conditions") or {}
+    if not isinstance(water_conditions, Mapping):
+        raise RefractivePortError("flat_port.water_conditions debe ser un objeto.")
+    port = make_flat_port_parameters(
         normal_camera=flat["normal_camera"],
         interface_distance_mm=flat["interface_distance_mm"],
         glass_thickness_mm=flat["glass_thickness_mm"],
@@ -258,7 +366,15 @@ def load_manual_flat_port(path: str | Path) -> FlatPortParameters:
         source=str(input_path),
         lens_distance_approximation=bool(flat.get("lens_distance_approximation", False)),
         uncertainty_note=flat.get("uncertainty_note"),
+        parameter_standard_deviations=flat.get("parameter_standard_deviations"),
+        water_temperature_c=water_conditions.get("temperature_c"),
+        water_salinity_ppt=water_conditions.get("salinity_ppt"),
+        water_pressure_dbar=water_conditions.get("pressure_dbar"),
     )
+    stored_hash = flat.get("port_hash")
+    if stored_hash is not None and str(stored_hash) != port.port_hash:
+        raise RefractivePortError("El hash de los parámetros del puerto no coincide.")
+    return port
 
 
 def trace_refracted_ray(v_air: object, port: FlatPortParameters, *, interface_tolerance_mm: float = 1e-6) -> RefractedRay:
