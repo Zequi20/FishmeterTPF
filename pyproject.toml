@@ -18,6 +18,12 @@ dependencies = [
   "PyYAML>=6.0",
 ]
 
+[project.optional-dependencies]
+test = [
+  "pytest>=8.0",
+  "pytest-cov>=5.0",
+]
+
 [project.scripts]
 fish-morphometry = "fish_morphometry.app:run"
 
@@ -29,3 +35,25 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.coverage.run]
+branch = true
+source = ["src/fish_morphometry"]
+omit = [
+  "src/fish_morphometry/ui/*",
+  "src/fish_morphometry/app.py",
+  # Estos caminos ejecutan adquisición/calibración física con imágenes reales;
+  # se prueban sus contratos de perfiles, pero no se fuerza cobertura artificial
+  # sobre las ramas de OpenCV que requieren un tablero capturado.
+  "src/fish_morphometry/calibration/air_calibration.py",
+  "src/fish_morphometry/calibration/b_calibration.py",
+  "src/fish_morphometry/geometry/rail_plane.py",
+]
+
+[tool.coverage.report]
+exclude_also = [
+  "if TYPE_CHECKING:",
+  "if __name__ == .__main__.:",
+]
+fail_under = 70

@@ -41,7 +41,17 @@ class MethodsAAndAPrimeTests(unittest.TestCase):
         with self.assertRaises(MeasurementError):
             measure_a("sample", small, self.points, 30.0, image_shape=(200, 200, 3))
 
+    def test_a_prime_rejects_negative_coplanarity_error(self):
+        with self.assertRaises(MeasurementError):
+            measure_a_prime(
+                "sample",
+                self.marker,
+                self.points,
+                30.0,
+                coplanarity_error_mm=-0.1,
+                image_shape=(200, 200, 3),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
-

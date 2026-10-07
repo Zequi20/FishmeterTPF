@@ -1,5 +1,11 @@
 # Fish Morphometry
 
+La especificación técnica incorporada para la auditoría morfométrica está en
+[`docs/MORFOMETRIA_CONTEXTO_CODEX.md`](docs/MORFOMETRIA_CONTEXTO_CODEX.md). El
+resultado de la verificación inicial de A y A′, incluyendo el límite teórico de
+la distancia euclidiana, está documentado en
+[`docs/A_A_PRIME_AUDIT.md`](docs/A_A_PRIME_AUDIT.md).
+
 Aplicación de escritorio para medir réplicas de peces con los métodos A, A′, B y C. A y A′ conservan la escala métrica directa obtenida de un marcador ArUco. B usa un tablero rígido sumergido para ajustar una cámara pinhole efectiva convencional. C calibra la cámara en aire y modela explícitamente el puerto plano aire–vidrio–agua mediante dos refracciones de Snell.
 
 B y C no utilizan el tamaño, la pose ni la escala de ningún ArUco, aunque un marcador aparezca en la fotografía. B es una aproximación pinhole efectiva a través de agua y vidrio: `D_B` solo modela la distorsión del ajuste y no es una corrección física de la refracción. C usa `K_air`, `D_air`, la ley de Snell y los parámetros medidos del puerto plano; por eso ambos métodos deben validarse con una regla o barra sumergida.
@@ -22,6 +28,8 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -e .
+# Dependencias de pruebas (pytest + pytest-cov):
+python -m pip install -e '.[test]'
 ```
 
 Si ya existe un `.venv` incompleto porque faltaba `ensurepip`, elimínelo y créelo de nuevo después de instalar `python3.12-venv`:
@@ -38,6 +46,12 @@ Con el entorno activado:
 
 ```bash
 python -m fish_morphometry
+pytest -q
+pytest tests/unit -q
+pytest tests/integration -q
+pytest --cov=src/fish_morphometry --cov-report=term-missing
+
+# Las pruebas unittest históricas siguen siendo compatibles:
 python -m unittest discover -s tests -v
 ```
 
@@ -49,6 +63,8 @@ fish-morphometry
 
 La aplicación no requiere imágenes, puntos, configuraciones ni calibraciones para abrirse. La configuración YAML de A/A′ se carga explícitamente desde código; los perfiles y referencias de B se cargan desde su panel y el arranque no depende de ellos.
 
+La suite automatizada está organizada en `tests/unit`, `tests/integration` y fixtures sintéticos deterministas en `tests/fixtures`. No requiere cámara, GPU, conexión de red, display ni datos experimentales. Las ramas de calibración que dependen de fotografías reales de tableros se cubren mediante contratos de perfiles y errores; no se presentan como validación física.
+
 ## Flujo de A y A′
 
 1. **Cargar imagen**: selecciona una imagen BGR compatible con OpenCV.
@@ -58,8 +74,12 @@ La aplicación no requiere imágenes, puntos, configuraciones ni calibraciones p
    - `p2`: extremo posterior de la réplica.
    - `p3`: extremo superior de la profundidad corporal máxima.
    - `p4`: extremo inferior de la profundidad corporal máxima.
-4. Introduce el lado físico medido con calibre para el marcador de A y A′.
-5. Calcula A y/o A′. Ambos reciben exactamente el mismo diccionario de puntos.
+4. Introduce el lado físico medido con calibre, el ángulo del eje longitudinal
+   observado en la imagen y la tolerancia angular para la sección p3–p4. Un
+   ángulo de `0°` solo corresponde cuando el pez está horizontal; en la imagen
+   el eje Y crece hacia abajo.
+5. Calcula A y/o A′. Ambos reciben exactamente el mismo diccionario de puntos y
+   el mismo eje anatómico de imagen.
 6. Para B, carga o crea el perfil de calibración, carga o crea la referencia cámara–rail, introduce el ID de réplica, posición del carrito y desplazamiento físico hasta el plano de simetría. El botón de B permanece deshabilitado si falta cualquiera de esos datos.
 7. Para C, abre su pestaña, carga un perfil de calibración en aire o crea uno con al menos 15 vistas, importa un YAML Calibmar `FLATPORT` o un `flat_port` manual, y define el plano de simetría explícito o desde la geometría del rail de B. El cálculo permanece `PENDING_VALIDATION` hasta validar físicamente el modelo.
 8. Revisa la tabla comparativa y exporta. El CSV maestro incluye A, A′, B y C cuando están disponibles; cualquiera de B o C puede exportarse por separado.
@@ -72,22 +92,53 @@ El método A usa un ArUco fijado a la cara interna del vidrio (`marker_role: gla
 
 El método A′ usa un ArUco instalado en el soporte del carrito, con la cara impresa alineada con el plano de simetría de la réplica (`marker_role: coplanar`, `marker_plane: replica_symmetry_plane`). El campo `coplanarity_error_mm` registra una medición física; la aplicación no intenta inferirla desde una imagen monocular.
 
-Para ambos métodos se usa:
+En A se conserva la aproximación de escala uniforme del marcador situado en el
+vidrio:
 
 ```text
 k = lado_físico_mm / lado_observado_px
-distancia_mm = distancia_euclidiana_px × k
+qᵢ = k · pᵢ
 ```
 
-El lado observado es la media de los cuatro lados detectados del cuadrado ArUco. No se usa el tamaño nominal del diccionario. El lado físico debe medirse con calibre.
+En A′ se obtiene una homografía `H` con las cuatro esquinas del ArUco coplanar y
+el cuadrado métrico definido por su lado físico:
+
+```text
+qᵢ = H(pᵢ)
+```
+
+Después de transformar los puntos al espacio métrico, ambos métodos usan el eje
+anatómico unitario `u` y su normal `n`:
+
+```text
+LT = |(q2 - q1) · u|
+PC = |(q4 - q3) · n|
+```
+
+La profundidad solo se informa si p3–p4 cumple la tolerancia angular configurada
+respecto de una sección perpendicular. Las distancias euclidianas se conservan
+como diagnósticos, no como sustitutos de estas proyecciones.
+
+El lado observado de A es la media de los cuatro lados detectados. El campo
+`scale_mm_per_px` de A′ se conserva como escala nominal del marcador por
+compatibilidad, pero no representa una escala global: la medición usa la
+homografía completa.
 
 ## Calidad y limitaciones
 
 La aplicación produce `ERROR` cuando no puede calcular de forma válida: imagen ilegible, marcador ausente, ID incorrecto, lado físico inválido, marcador demasiado pequeño, puntos faltantes/repetidos o coordenadas fuera de imagen.
 
-Produce `WARNING` cuando el cálculo es posible pero el coeficiente de variación de los cuatro lados del ArUco supera el umbral configurado. Las advertencias se conservan en la tabla, JSON y CSV; ninguna captura se descarta silenciosamente.
+Produce `WARNING` cuando el coeficiente de variación del ArUco supera el umbral,
+cuando p3–p4 no pertenece a una sección suficientemente perpendicular o, en A,
+para recordar que la escala procede del plano del vidrio. Si p3–p4 excede la
+tolerancia, `body_depth_mm` se exporta como nulo y se conservan el desvío angular,
+el offset longitudinal y la distancia euclidiana auxiliar.
 
-La escala directa supone que la geometría observada es suficientemente representativa. Perspectiva, inclinación del marcador, distancia entre el plano del marcador de vidrio y el plano de la réplica y falta de coplanaridad pueden introducir error. Esta versión no corrige esos efectos.
+La homografía de A′ corrige la perspectiva dentro del plano coplanar, pero no la
+falta de coplanaridad ni la distorsión residual de lente. A no puede trasladar
+exactamente al pez la escala obtenida en el vidrio: la separación entre planos y
+la refracción siguen siendo limitaciones físicas y quedan advertidas en cada
+resultado.
 
 ## Método B: procedimiento reproducible
 
@@ -206,7 +257,10 @@ src/fish_morphometry/
 ├── validation/                    Validación física B y C; sensibilidad
 ├── io/exporters.py                JSON y CSV
 └── ui/                            Tkinter/ttk, imagen y resultados
-tests/                             Pruebas unitarias sintéticas A/A′/B/C
+tests/
+├── fixtures/                       YAML/JSON deterministas
+├── unit/                           Geometría, perfiles, puntos y calidad
+└── integration/                    Métodos A/A′/B/C y exportación
 ```
 
 Las pruebas se ejecutan con:

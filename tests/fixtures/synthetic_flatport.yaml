@@ -1,0 +1,13 @@
+flat_port:
+  units: "mm"
+  normal_camera: [0.0, 0.0, 1.0]
+  interface_distance_mm: 100.0
+  glass_thickness_mm: 10.0
+  refractive_indices:
+    air: 1.0
+    glass: 1.5
+    water: 1.333
+measurement_plane:
+  units: "mm"
+  point_camera_mm: [0.0, 0.0, 200.0]
+  normal_camera: [0.0, 0.0, 1.0]

@@ -20,6 +20,11 @@ aruco:
 
 measurements:
   use_same_points_for_all_methods: true
+  # Dirección del eje cabeza→cola en coordenadas de imagen (Y crece hacia abajo).
+  # (1, 0) solo es válido si el montaje verifica que el pez está horizontal.
+  longitudinal_axis_px: [1.0, 0.0]
+  # Umbral operativo configurable; debe justificarse según el error experimental.
+  maximum_depth_section_angle_degrees: 5.0
   total_length:
     start: "p1"
     end: "p2"

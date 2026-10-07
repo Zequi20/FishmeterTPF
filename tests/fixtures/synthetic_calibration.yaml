@@ -1,0 +1,23 @@
+schema: fish_morphometry.air_calibration.v1
+profile_id: fixture-air
+model: OPENCV
+profile_hash: 7124867cd9940d1336e3f35c7c590a51151c3bcd6d4b404dfa47d30dd3b54b21
+camera_matrix:
+  - [100.0, 0.0, 100.0]
+  - [0.0, 100.0, 100.0]
+  - [0.0, 0.0, 1.0]
+distortion_coefficients: [0.0, 0.0, 0.0, 0.0]
+resolution: [200, 200]
+board: null
+rms_px: 0.1
+created_at_utc: "2026-01-01T00:00:00+00:00"
+versions:
+  opencv: fixture
+  fish_morphometry: fixture
+source: fixture
+views:
+  received: 0
+  accepted: 0
+  rejected: 0
+  reports: []
+source_metadata: {}

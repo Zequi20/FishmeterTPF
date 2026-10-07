@@ -47,7 +47,7 @@ class QualityReport:
 
 @dataclass(frozen=True)
 class MeasurementResult:
-    """Resultado de un método directo calculado sobre una imagen y cuatro puntos."""
+    """Resultado trazable de A/A′ sobre una imagen y cuatro puntos."""
 
     method: str
     image_id: str
@@ -58,8 +58,20 @@ class MeasurementResult:
     marker_side_px: float
     scale_mm_per_px: float
     points_px: dict[str, Point]
+    points_metric_mm: dict[str, Point]
+    metric_transform: str
+    scale_is_global: bool
+    longitudinal_axis_px: Point
+    longitudinal_axis_metric: Point
+    normal_axis_metric: Point
+    maximum_depth_section_angle_degrees: float
     total_length_mm: float
-    body_depth_mm: float
+    body_depth_mm: float | None
+    total_length_euclidean_mm: float
+    body_depth_euclidean_mm: float
+    body_depth_section_offset_mm: float
+    body_depth_section_angle_degrees: float
+    body_depth_valid: bool
     quality: QualityReport
     coplanarity_error_mm: float | None = None
 
@@ -67,6 +79,8 @@ class MeasurementResult:
         payload: dict[str, object] = {
             "method": self.method,
             "image_id": self.image_id,
+            "units": "mm",
+            "points_source": "shared_annotation",
             "marker_id": self.marker_id,
             "marker_role": self.marker_role,
             "marker_plane": self.marker_plane,
@@ -74,8 +88,24 @@ class MeasurementResult:
             "marker_side_px": self.marker_side_px,
             "scale_mm_per_px": self.scale_mm_per_px,
             "points_px": {name: list(point) for name, point in self.points_px.items()},
+            "points_metric_mm": {
+                name: list(point) for name, point in self.points_metric_mm.items()
+            },
+            "metric_transform": self.metric_transform,
+            "scale_is_global": self.scale_is_global,
+            "longitudinal_axis_px": list(self.longitudinal_axis_px),
+            "longitudinal_axis_metric": list(self.longitudinal_axis_metric),
+            "normal_axis_metric": list(self.normal_axis_metric),
+            "maximum_depth_section_angle_degrees": (
+                self.maximum_depth_section_angle_degrees
+            ),
             "total_length_mm": self.total_length_mm,
             "body_depth_mm": self.body_depth_mm,
+            "total_length_euclidean_mm": self.total_length_euclidean_mm,
+            "body_depth_euclidean_mm": self.body_depth_euclidean_mm,
+            "body_depth_section_offset_mm": self.body_depth_section_offset_mm,
+            "body_depth_section_angle_degrees": self.body_depth_section_angle_degrees,
+            "body_depth_valid": self.body_depth_valid,
             "quality": self.quality.to_dict(),
         }
         if self.coplanarity_error_mm is not None:

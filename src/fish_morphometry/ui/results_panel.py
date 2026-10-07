@@ -134,9 +134,16 @@ class ResultsPanel(ttk.Frame):
                         + " · v_water=" + str(tuple(round(v, 5) for v in result.v_water["p1"]))
                     )
             else:
+                transform_label = (
+                    "homografía coplanar"
+                    if result.metric_transform == "planar_homography"
+                    else "escala uniforme aproximada"
+                )
+                depth_state = "sección válida" if result.body_depth_valid else "profundidad inválida"
                 detail_lines.append(
                     f"{_method_label(result.method)} · marcador {result.marker_id} · "
-                    f"lado {result.marker_side_px:.2f} px · escala {result.scale_mm_per_px:.6f} mm/px · "
+                    f"{transform_label} · escala nominal {result.scale_mm_per_px:.6f} mm/px · "
+                    f"desvío p3–p4 {result.body_depth_section_angle_degrees:.3f}° ({depth_state}) · "
                     f"estado {status} · {warnings}"
                 )
         self.details.configure(text="\n".join(detail_lines))

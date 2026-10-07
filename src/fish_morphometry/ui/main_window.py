@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
@@ -133,6 +134,8 @@ class MainWindow:
         self.a_side_var = tk.StringVar(value="30.0")
         self.a_prime_side_var = tk.StringVar(value="30.0")
         self.coplanarity_var = tk.StringVar(value="0.0")
+        self.axis_angle_var = tk.StringVar(value="0.0")
+        self.depth_section_tolerance_var = tk.StringVar(value="5.0")
         self.b_calibration_position_var = tk.StringVar(value="")
         self.b_cols_var = tk.StringVar(value="")
         self.b_rows_var = tk.StringVar(value="")
@@ -345,9 +348,25 @@ class MainWindow:
             ttk.Entry(card, textvariable=self.a_side_var, width=12).grid(
                 row=3, column=1, sticky="ew", pady=(0, 6)
             )
+            ttk.Label(card, text="Ángulo longitudinal en imagen (°)", style="Input.TLabel").grid(
+                row=4, column=0, sticky="w", pady=(0, 6)
+            )
+            ttk.Entry(card, textvariable=self.axis_angle_var, width=12).grid(
+                row=4, column=1, sticky="ew", pady=(0, 6)
+            )
+            ttk.Label(card, text="Tolerancia de sección p3–p4 (°)", style="Input.TLabel").grid(
+                row=5, column=0, sticky="w", pady=(0, 6)
+            )
+            ttk.Entry(card, textvariable=self.depth_section_tolerance_var, width=12).grid(
+                row=5, column=1, sticky="ew", pady=(0, 6)
+            )
             button = ttk.Button(card, text="Calcular A", style="Action.TButton", command=self._calculate_a)
             self.calculate_a_button = button
-            button_row = 4
+            button_row = 6
+            help_text = (
+                "Proyecta sobre el eje anatómico. La escala uniforme del vidrio "
+                "sigue siendo una aproximación del plano del pez."
+            )
         else:
             ttk.Label(card, text="ID del ArUco", style="Input.TLabel").grid(
                 row=2, column=0, sticky="w", pady=(0, 6)
@@ -367,18 +386,46 @@ class MainWindow:
             ttk.Entry(card, textvariable=self.coplanarity_var, width=12).grid(
                 row=4, column=1, sticky="ew", pady=(0, 6)
             )
+            ttk.Label(card, text="Ángulo longitudinal en imagen (°)", style="Input.TLabel").grid(
+                row=5, column=0, sticky="w", pady=(0, 6)
+            )
+            ttk.Entry(card, textvariable=self.axis_angle_var, width=12).grid(
+                row=5, column=1, sticky="ew", pady=(0, 6)
+            )
+            ttk.Label(card, text="Tolerancia de sección p3–p4 (°)", style="Input.TLabel").grid(
+                row=6, column=0, sticky="w", pady=(0, 6)
+            )
+            ttk.Entry(card, textvariable=self.depth_section_tolerance_var, width=12).grid(
+                row=6, column=1, sticky="ew", pady=(0, 6)
+            )
             button = ttk.Button(card, text="Calcular A′", style="Action.TButton", command=self._calculate_a_prime)
             self.calculate_a_prime_button = button
-            button_row = 5
+            button_row = 7
+            help_text = (
+                "Rectifica por homografía el plano coplanar y luego proyecta sobre "
+                "el eje anatómico. Ángulos positivos siguen el eje Y hacia abajo."
+            )
         button.grid(row=button_row, column=0, sticky="w", pady=(5, 0))
         ttk.Label(
             card,
-            text="Usa los puntos p1–p4 de la imagen original. Sin corrección de perspectiva.",
+            text=help_text,
             style="CardMuted.TLabel",
             wraplength=420,
             justify="left",
         ).grid(row=button_row + 1, column=0, columnspan=2, sticky="w", pady=(5, 0))
         return card
+
+    def _direct_morphometry_parameters(self) -> tuple[Point, float]:
+        """Lee el eje compartido de A/A′ y la tolerancia anatómica configurada."""
+
+        angle = self._float_value(self.axis_angle_var.get(), "Ángulo longitudinal")
+        tolerance = self._float_value(
+            self.depth_section_tolerance_var.get(), "Tolerancia de sección p3–p4"
+        )
+        if tolerance < 0 or tolerance >= 90:
+            raise MeasurementError("La tolerancia de sección debe estar entre 0 y 90 grados.")
+        radians = math.radians(angle)
+        return (math.cos(radians), math.sin(radians)), tolerance
 
     def _build_b_card(self, parent: ttk.Frame) -> ttk.Frame:
         """Panel del flujo B: perfil, referencia, posición y exportación."""
@@ -1315,11 +1362,14 @@ class MainWindow:
             return
         try:
             marker = select_marker(self.markers, self._int_value(self.a_id_var.get(), "ID de A"))
+            longitudinal_axis, depth_tolerance = self._direct_morphometry_parameters()
             self.result_a = measure_a(
                 self.image_path.stem if self.image_path else "image",
                 marker,
                 self.points,
                 self._float_value(self.a_side_var.get(), "Lado físico de A"),
+                longitudinal_axis_px=longitudinal_axis,
+                maximum_depth_section_angle_degrees=depth_tolerance,
                 image_shape=self.image_bgr.shape if self.image_bgr is not None else None,
             )
         except (ArucoDetectionError, MeasurementError, ValueError) as exc:
@@ -1333,12 +1383,15 @@ class MainWindow:
             return
         try:
             marker = select_marker(self.markers, self._int_value(self.a_prime_id_var.get(), "ID de A′"))
+            longitudinal_axis, depth_tolerance = self._direct_morphometry_parameters()
             self.result_a_prime = measure_a_prime(
                 self.image_path.stem if self.image_path else "image",
                 marker,
                 self.points,
                 self._float_value(self.a_prime_side_var.get(), "Lado físico de A′"),
                 coplanarity_error_mm=self._float_value(self.coplanarity_var.get(), "Error de coplanaridad"),
+                longitudinal_axis_px=longitudinal_axis,
+                maximum_depth_section_angle_degrees=depth_tolerance,
                 image_shape=self.image_bgr.shape if self.image_bgr is not None else None,
             )
         except (ArucoDetectionError, MeasurementError, ValueError) as exc:

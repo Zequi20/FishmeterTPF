@@ -43,8 +43,19 @@ def export_results_csv(results: Iterable[_Result], path: str | Path) -> Path:
         "marker_side_mm",
         "marker_side_px",
         "scale_mm_per_px",
+        "metric_transform",
+        "scale_is_global",
+        "longitudinal_axis_px",
+        "longitudinal_axis_metric",
+        "normal_axis_metric",
+        "maximum_depth_section_angle_degrees",
         "total_length_mm",
         "body_depth_mm",
+        "total_length_euclidean_mm",
+        "body_depth_euclidean_mm",
+        "body_depth_section_offset_mm",
+        "body_depth_section_angle_degrees",
+        "body_depth_valid",
         "quality_status",
         "quality_warnings",
         "coplanarity_error_mm",
@@ -58,6 +69,7 @@ def export_results_csv(results: Iterable[_Result], path: str | Path) -> Path:
         "calibration_profile_hash",
         "rail_reference_id",
         "points_px",
+        "points_metric_mm",
         "points_camera_mm",
         "exclusion_reason",
         "metadata",
@@ -80,8 +92,29 @@ def export_results_csv(results: Iterable[_Result], path: str | Path) -> Path:
                     "marker_side_mm": payload.get("marker_side_mm", ""),
                     "marker_side_px": payload.get("marker_side_px", ""),
                     "scale_mm_per_px": payload.get("scale_mm_per_px", ""),
+                    "metric_transform": payload.get("metric_transform", ""),
+                    "scale_is_global": payload.get("scale_is_global", ""),
+                    "longitudinal_axis_px": json.dumps(
+                        payload.get("longitudinal_axis_px", []), ensure_ascii=False
+                    ),
+                    "longitudinal_axis_metric": json.dumps(
+                        payload.get("longitudinal_axis_metric", []), ensure_ascii=False
+                    ),
+                    "normal_axis_metric": json.dumps(
+                        payload.get("normal_axis_metric", []), ensure_ascii=False
+                    ),
+                    "maximum_depth_section_angle_degrees": payload.get(
+                        "maximum_depth_section_angle_degrees", ""
+                    ),
                     "total_length_mm": payload.get("total_length_mm", ""),
                     "body_depth_mm": payload.get("body_depth_mm", ""),
+                    "total_length_euclidean_mm": payload.get("total_length_euclidean_mm", ""),
+                    "body_depth_euclidean_mm": payload.get("body_depth_euclidean_mm", ""),
+                    "body_depth_section_offset_mm": payload.get("body_depth_section_offset_mm", ""),
+                    "body_depth_section_angle_degrees": payload.get(
+                        "body_depth_section_angle_degrees", ""
+                    ),
+                    "body_depth_valid": payload.get("body_depth_valid", ""),
                     "quality_status": quality.get("status", ""),
                     "quality_warnings": " | ".join(quality.get("warnings", [])),
                     "coplanarity_error_mm": payload.get("coplanarity_error_mm", ""),
@@ -95,6 +128,9 @@ def export_results_csv(results: Iterable[_Result], path: str | Path) -> Path:
                     "calibration_profile_hash": payload.get("calibration_profile_hash", ""),
                     "rail_reference_id": payload.get("rail_reference_id", ""),
                     "points_px": json.dumps(payload.get("points_px", {}), ensure_ascii=False),
+                    "points_metric_mm": json.dumps(
+                        payload.get("points_metric_mm", {}), ensure_ascii=False
+                    ),
                     "points_camera_mm": json.dumps(
                         payload.get("points_camera_mm", {}), ensure_ascii=False
                     ),
