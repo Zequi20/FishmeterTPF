@@ -5,10 +5,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 import math
 
-import numpy as np
-
 from ..calibration.b_calibration import BCalibrationProfile, validate_b_calibration_profile
-from ..domain.models import BMeasurementResult, Point, Point3D, QualityReport
+from ..domain.models import BMeasurementResult, Point, QualityReport
 from ..geometry.rail_plane import (
     RailGeometryError,
     RailPlaneReference,
@@ -16,17 +14,20 @@ from ..geometry.rail_plane import (
     validate_rail_reference,
 )
 from ..geometry.ray_plane import intersect_image_points_with_plane
+from ..geometry.ray_plane import image_axis_to_plane_direction
+from ..measurements.morphometry import measure_projected_morphometry_3d, normalize_axis
 from ..measurements.quality import MeasurementError, validate_points
 
 
-def _distance(point_a: Point3D, point_b: Point3D) -> float:
-    distance = float(np.linalg.norm(np.asarray(point_b) - np.asarray(point_a)))
-    if not math.isfinite(distance):
-        raise MeasurementError("La distancia 3D calculada no es finita.")
-    return distance
-
-
-def _quality_warnings(profile: BCalibrationProfile, delta_z_mm: float) -> QualityReport:
+def _quality_warnings(
+    profile: BCalibrationProfile,
+    rail_reference: RailPlaneReference,
+    delta_z_mm: float,
+    *,
+    body_depth_valid: bool,
+    body_depth_section_angle_degrees: float,
+    maximum_depth_section_angle_degrees: float,
+) -> QualityReport:
     warnings = [
         "B es una aproximación pinhole efectiva a través de agua y vidrio; "
         "D_B no corrige físicamente la refracción."
@@ -35,12 +36,28 @@ def _quality_warnings(profile: BCalibrationProfile, delta_z_mm: float) -> Qualit
         warnings.append(
             f"El RMS de calibración ({profile.rms_px:.3f} px) no alcanza el objetivo previsto de < 0,7 px."
         )
+    if rail_reference.direction_source == "manual":
+        warnings.append(
+            "La dirección del rail fue suministrada manualmente; se recomienda "
+            "estimarla con referencias en dos o más posiciones conocidas."
+        )
+    if rail_reference.calibration_context_hash is None:
+        warnings.append(
+            "La referencia del rail es heredada y no enlaza el contexto completo "
+            "de calibración; regenérela para trazabilidad plena."
+        )
     if not math.isclose(delta_z_mm, 0.0, abs_tol=1e-9):
         warnings.append(
             f"La captura está separada {delta_z_mm:+.3f} mm de la zona de calibración; "
             "la exactitud debe comprobarse físicamente en esta posición."
         )
-    return QualityReport(status="WARNING", warnings=tuple(warnings))
+    if not body_depth_valid:
+        warnings.append(
+            "p3–p4 no pertenece a una sección suficientemente perpendicular al eje "
+            f"({body_depth_section_angle_degrees:.3f}° > "
+            f"{maximum_depth_section_angle_degrees:.3f}°); la profundidad fue invalidada."
+        )
+    return QualityReport(status="PENDING_VALIDATION", warnings=tuple(warnings))
 
 
 def measure_b(
@@ -55,12 +72,17 @@ def measure_b(
     repetition: str | int | None = None,
     image_shape: tuple[int, ...] | None = None,
     units: str = "mm",
+    longitudinal_axis_px: Point = (1.0, 0.0),
+    maximum_depth_section_angle_degrees: float = 5.0,
+    replica_plane_offset_direction: str = "rail",
 ) -> BMeasurementResult:
     """Mide p1–p4 mediante rayos efectivos e intersección rayo–plano.
 
     Este contrato no recibe observaciones, IDs ni tamaños ArUco. Los puntos son
     las coordenadas de la imagen original compartidas con A y A′.
     """
+
+    from .. import __version__
 
     validate_b_calibration_profile(calibration_profile)
     validate_rail_reference(rail_reference)
@@ -73,6 +95,14 @@ def measure_b(
     if rail_reference.calibration_profile_hash != calibration_profile.profile_hash:
         raise RailGeometryError(
             "La referencia cámara–rail fue creada con otro perfil de calibración B."
+        )
+    if (
+        rail_reference.calibration_context_hash is not None
+        and rail_reference.calibration_context_hash
+        != calibration_profile.calibration_context_hash
+    ):
+        raise RailGeometryError(
+            "La referencia cámara–rail fue creada en otro contexto de calibración B."
         )
     if not math.isclose(
         rail_reference.z_ref_mm,
@@ -93,10 +123,12 @@ def measure_b(
                 f"perfil {calibration_profile.resolution[0]}×{calibration_profile.resolution[1]}."
             )
     normalized_points = validate_points(points_px, image_shape)
+    normalized_axis_px = normalize_axis(longitudinal_axis_px)
     plane_point, plane_normal, delta_z_mm = build_measurement_plane(
         rail_reference,
         capture_rail_position_mm,
         replica_plane_offset_mm,
+        replica_plane_offset_direction=replica_plane_offset_direction,
     )
     points_camera = intersect_image_points_with_plane(
         normalized_points,
@@ -105,9 +137,29 @@ def measure_b(
         plane_point,
         plane_normal,
     )
-    total_length = _distance(points_camera["p1"], points_camera["p2"])
-    body_depth = _distance(points_camera["p3"], points_camera["p4"])
-    quality = _quality_warnings(calibration_profile, delta_z_mm)
+    axis_camera = image_axis_to_plane_direction(
+        normalized_points["p1"],
+        normalized_axis_px,
+        calibration_profile.K,
+        calibration_profile.D,
+        plane_point,
+        plane_normal,
+        probe_length_px=max(30.0, min(calibration_profile.resolution) * 0.1),
+    )
+    morphometry = measure_projected_morphometry_3d(
+        points_camera,
+        axis_camera,
+        plane_normal,
+        maximum_depth_section_angle_degrees=maximum_depth_section_angle_degrees,
+    )
+    quality = _quality_warnings(
+        calibration_profile,
+        rail_reference,
+        delta_z_mm,
+        body_depth_valid=morphometry.body_depth_valid,
+        body_depth_section_angle_degrees=morphometry.body_depth_section_angle_degrees,
+        maximum_depth_section_angle_degrees=float(maximum_depth_section_angle_degrees),
+    )
     return BMeasurementResult(
         method="B",
         image_id=str(image_id),
@@ -116,29 +168,51 @@ def measure_b(
         capture_rail_position_mm=float(capture_rail_position_mm),
         delta_z_mm=delta_z_mm,
         replica_plane_offset_mm=float(replica_plane_offset_mm),
+        replica_plane_offset_direction=str(replica_plane_offset_direction).strip().lower(),
         units="mm",
         points_px=dict(normalized_points),
         points_camera_mm=points_camera,
-        total_length_mm=total_length,
-        body_depth_mm=body_depth,
+        longitudinal_axis_px=normalized_axis_px,
+        longitudinal_axis_camera=morphometry.longitudinal_axis,
+        normal_axis_camera=morphometry.normal_axis,
+        maximum_depth_section_angle_degrees=float(maximum_depth_section_angle_degrees),
+        total_length_mm=morphometry.total_length_mm,
+        body_depth_mm=morphometry.body_depth_mm,
+        total_length_euclidean_mm=morphometry.total_length_euclidean_mm,
+        body_depth_euclidean_mm=morphometry.body_depth_euclidean_mm,
+        body_depth_section_offset_mm=morphometry.body_depth_section_offset_mm,
+        body_depth_section_angle_degrees=morphometry.body_depth_section_angle_degrees,
+        body_depth_valid=morphometry.body_depth_valid,
         calibration_profile_id=calibration_profile.profile_id,
         calibration_profile_hash=calibration_profile.profile_hash,
+        calibration_context_hash=calibration_profile.calibration_context_hash,
         rail_reference_id=rail_reference.reference_id,
+        rail_reference_hash=rail_reference.reference_hash,
         quality=quality,
         metadata={
             "model": calibration_profile.model,
             "resolution": list(calibration_profile.resolution),
             "calibration_rms_px": calibration_profile.rms_px,
             "calibration_rail_position_mm": calibration_profile.calibration_rail_position_mm,
+            "calibration_context_hash": calibration_profile.calibration_context_hash,
             "measurement_plane_point_camera_mm": list(plane_point),
             "measurement_plane_normal_camera": list(plane_normal),
             "rail_direction_camera": list(rail_reference.rail_direction_camera),
+            "rail_direction_source": rail_reference.direction_source,
+            "rail_positions_used_mm": list(rail_reference.rail_positions_used_mm),
+            "rail_fit_residual_mm": rail_reference.rail_fit_residual_mm,
+            "rail_normal_spread_degrees": rail_reference.normal_spread_degrees,
             "rail_positive_direction": rail_reference.positive_direction,
             "reference_image_id": rail_reference.reference_image_id,
             "reference_reprojection_error_px": rail_reference.reprojection_error_px,
             "replica_planes_parallel_to_board": rail_reference.replica_planes_parallel_to_board,
             "rail_perpendicular_to_board": rail_reference.rail_perpendicular_to_board,
             "uses_aruco": False,
+            "points_source": "shared_annotation",
+            "measurement_convention": "projected_anatomical_axes",
+            "algorithm_version": "b_projected_anatomical_axes.v1",
+            "app_version": __version__,
+            "replica_plane_offset_direction": str(replica_plane_offset_direction).strip().lower(),
             "ray_model": "cv2.undistortPoints(P=None) -> (x,y,1)",
         },
     )
@@ -156,6 +230,9 @@ def measure_b_safe(
     repetition: str | int | None = None,
     image_shape: tuple[int, ...] | None = None,
     units: str = "mm",
+    longitudinal_axis_px: Point = (1.0, 0.0),
+    maximum_depth_section_angle_degrees: float = 5.0,
+    replica_plane_offset_direction: str = "rail",
 ) -> BMeasurementResult:
     """Devuelve un resultado ``ERROR`` trazable cuando una captura se excluye.
 
@@ -175,6 +252,9 @@ def measure_b_safe(
             repetition=repetition,
             image_shape=image_shape,
             units=units,
+            longitudinal_axis_px=longitudinal_axis_px,
+            maximum_depth_section_angle_degrees=maximum_depth_section_angle_degrees,
+            replica_plane_offset_direction=replica_plane_offset_direction,
         )
     except Exception as exc:  # noqa: BLE001 - el motivo se conserva en la trazabilidad B.
         try:
@@ -190,30 +270,69 @@ def measure_b_safe(
         except (TypeError, ValueError):
             safe_offset = 0.0
         safe_points: dict[str, Point] = {}
-        for name, point in points_px.items():
+        point_items = points_px.items() if isinstance(points_px, Mapping) else ()
+        for name, point in point_items:
             try:
                 safe_points[str(name)] = (float(point[0]), float(point[1]))
             except (TypeError, ValueError, IndexError):
                 continue
+        try:
+            safe_reference_position = float(getattr(rail_reference, "z_ref_mm", 0.0))
+            if not math.isfinite(safe_reference_position):
+                safe_reference_position = 0.0
+        except (TypeError, ValueError):
+            safe_reference_position = 0.0
+
+        def safe_text(value: object) -> str:
+            return "" if value is None else str(value)
+
+        try:
+            reference_hash = safe_text(getattr(rail_reference, "reference_hash", ""))
+        except Exception:  # noqa: BLE001 - la referencia defectuosa es el error a registrar.
+            reference_hash = ""
+        try:
+            context_hash = safe_text(
+                getattr(calibration_profile, "calibration_context_hash", "")
+            )
+        except Exception:  # noqa: BLE001 - el perfil defectuoso es el error a registrar.
+            context_hash = ""
         return BMeasurementResult(
             method="B",
             image_id=str(image_id),
             replica_id=str(replica_id),
             repetition=None if repetition is None else str(repetition),
             capture_rail_position_mm=safe_capture,
-            delta_z_mm=safe_capture - rail_reference.z_ref_mm,
+            delta_z_mm=safe_capture - safe_reference_position,
             replica_plane_offset_mm=safe_offset,
+            replica_plane_offset_direction=str(replica_plane_offset_direction),
             units="mm",
             points_px=safe_points,
             points_camera_mm={},
+            longitudinal_axis_px=None,
+            longitudinal_axis_camera=None,
+            normal_axis_camera=None,
+            maximum_depth_section_angle_degrees=None,
             total_length_mm=None,
             body_depth_mm=None,
-            calibration_profile_id=calibration_profile.profile_id,
-            calibration_profile_hash=calibration_profile.profile_hash,
-            rail_reference_id=rail_reference.reference_id,
+            total_length_euclidean_mm=None,
+            body_depth_euclidean_mm=None,
+            body_depth_section_offset_mm=None,
+            body_depth_section_angle_degrees=None,
+            body_depth_valid=None,
+            calibration_profile_id=safe_text(getattr(calibration_profile, "profile_id", "")),
+            calibration_profile_hash=safe_text(
+                getattr(calibration_profile, "profile_hash", "")
+            ),
+            calibration_context_hash=context_hash,
+            rail_reference_id=safe_text(getattr(rail_reference, "reference_id", "")),
+            rail_reference_hash=reference_hash,
             quality=QualityReport(status="ERROR", warnings=(str(exc),)),
             exclusion_reason=str(exc),
-            metadata={"uses_aruco": False, "excluded": True},
+            metadata={
+                "uses_aruco": False,
+                "excluded": True,
+                "error_type": type(exc).__name__,
+            },
         )
 
 

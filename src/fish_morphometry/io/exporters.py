@@ -48,6 +48,8 @@ def export_results_csv(results: Iterable[_Result], path: str | Path) -> Path:
         "longitudinal_axis_px",
         "longitudinal_axis_metric",
         "normal_axis_metric",
+        "longitudinal_axis_camera",
+        "normal_axis_camera",
         "maximum_depth_section_angle_degrees",
         "total_length_mm",
         "body_depth_mm",
@@ -63,11 +65,16 @@ def export_results_csv(results: Iterable[_Result], path: str | Path) -> Path:
         "repetition",
         "capture_rail_position_mm",
         "delta_z_mm",
+        "delta_rail_mm",
         "replica_plane_offset_mm",
+        "replica_plane_offset_direction",
         "units",
         "calibration_profile_id",
         "calibration_profile_hash",
+        "calibration_context_hash",
         "rail_reference_id",
+        "rail_reference_hash",
+        "validation_record_hash",
         "points_px",
         "points_metric_mm",
         "points_camera_mm",
@@ -103,6 +110,12 @@ def export_results_csv(results: Iterable[_Result], path: str | Path) -> Path:
                     "normal_axis_metric": json.dumps(
                         payload.get("normal_axis_metric", []), ensure_ascii=False
                     ),
+                    "longitudinal_axis_camera": json.dumps(
+                        payload.get("longitudinal_axis_camera", []), ensure_ascii=False
+                    ),
+                    "normal_axis_camera": json.dumps(
+                        payload.get("normal_axis_camera", []), ensure_ascii=False
+                    ),
                     "maximum_depth_section_angle_degrees": payload.get(
                         "maximum_depth_section_angle_degrees", ""
                     ),
@@ -122,11 +135,20 @@ def export_results_csv(results: Iterable[_Result], path: str | Path) -> Path:
                     "repetition": payload.get("repetition", ""),
                     "capture_rail_position_mm": payload.get("capture_rail_position_mm", ""),
                     "delta_z_mm": payload.get("delta_z_mm", ""),
+                    "delta_rail_mm": payload.get("delta_rail_mm", ""),
                     "replica_plane_offset_mm": payload.get("replica_plane_offset_mm", ""),
+                    "replica_plane_offset_direction": payload.get(
+                        "replica_plane_offset_direction", ""
+                    ),
                     "units": payload.get("units", ""),
                     "calibration_profile_id": payload.get("calibration_profile_id", ""),
                     "calibration_profile_hash": payload.get("calibration_profile_hash", ""),
+                    "calibration_context_hash": payload.get(
+                        "calibration_context_hash", ""
+                    ),
                     "rail_reference_id": payload.get("rail_reference_id", ""),
+                    "rail_reference_hash": payload.get("rail_reference_hash", ""),
+                    "validation_record_hash": payload.get("validation_record_hash", ""),
                     "points_px": json.dumps(payload.get("points_px", {}), ensure_ascii=False),
                     "points_metric_mm": json.dumps(
                         payload.get("points_metric_mm", {}), ensure_ascii=False

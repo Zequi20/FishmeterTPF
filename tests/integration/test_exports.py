@@ -4,6 +4,7 @@ import json
 from fish_morphometry.io.exporters import export_method_results, export_results_csv
 from fish_morphometry.methods.a import measure_a
 from fish_morphometry.methods.a_prime import measure_a_prime
+from fish_morphometry.methods.b import measure_b
 from fish_morphometry.methods.c import measure_c_safe
 
 
@@ -37,3 +38,26 @@ def test_export_does_not_overwrite_other_image(tmp_path, points_px, image_shape,
     export_results_csv((second,), tmp_path / "master_two.csv")
     assert "one" in (tmp_path / "master_one.csv").read_text(encoding="utf-8")
     assert "two" in (tmp_path / "master_two.csv").read_text(encoding="utf-8")
+
+
+def test_b_export_keeps_projected_diagnostics_and_geometry_hashes(
+    tmp_path, points_px, image_shape, b_profile, rail_reference
+):
+    result = measure_b(
+        "b-export",
+        points_px,
+        b_profile,
+        rail_reference,
+        100,
+        0,
+        replica_id="r",
+        image_shape=image_shape,
+    )
+    path = export_results_csv((result,), tmp_path / "b.csv")
+    with path.open(encoding="utf-8", newline="") as stream:
+        row = next(csv.DictReader(stream))
+    assert row["total_length_euclidean_mm"]
+    assert row["longitudinal_axis_camera"]
+    assert row["delta_rail_mm"] == "0.0"
+    assert row["calibration_context_hash"] == b_profile.calibration_context_hash
+    assert row["rail_reference_hash"] == rail_reference.reference_hash

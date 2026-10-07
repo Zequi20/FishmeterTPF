@@ -158,6 +158,45 @@ def intersect_image_points_with_plane(
     }
 
 
+def image_axis_to_plane_direction(
+    anchor_px: Point,
+    axis_px: Point,
+    camera_matrix: object,
+    distortion_coefficients: object,
+    plane_point_camera_mm: object,
+    plane_normal_camera: object,
+    *,
+    probe_length_px: float = 100.0,
+) -> Point3D:
+    """Transforma una recta anatómica de imagen en una dirección del plano 3D."""
+
+    try:
+        axis = np.asarray(axis_px, dtype=np.float64).reshape(2)
+        anchor = np.asarray(anchor_px, dtype=np.float64).reshape(2)
+        probe = float(probe_length_px)
+    except (TypeError, ValueError) as exc:
+        raise RayPlaneError("El eje anatómico de imagen no tiene formato válido.") from exc
+    norm = float(np.linalg.norm(axis))
+    if not np.all(np.isfinite(axis)) or not np.all(np.isfinite(anchor)) or norm <= 0:
+        raise RayPlaneError("El eje anatómico de imagen debe ser finito y no nulo.")
+    if not math.isfinite(probe) or probe <= 0:
+        raise RayPlaneError("La longitud de prueba del eje debe ser positiva y finita.")
+    probe_point = anchor + axis / norm * probe
+    points = intersect_image_points_with_plane(
+        {"anchor": tuple(anchor), "probe": tuple(probe_point)},
+        camera_matrix,
+        distortion_coefficients,
+        plane_point_camera_mm,
+        plane_normal_camera,
+    )
+    direction = np.asarray(points["probe"]) - np.asarray(points["anchor"])
+    direction_norm = float(np.linalg.norm(direction))
+    if not np.all(np.isfinite(direction)) or direction_norm <= 0:
+        raise RayPlaneError("El eje anatómico no pudo transformarse al plano métrico.")
+    direction /= direction_norm
+    return (float(direction[0]), float(direction[1]), float(direction[2]))
+
+
 # Alias explícito para consumidores que nombran la operación "with plane".
 intersect_ray_with_plane = intersect_ray_plane
 intersect_ray_with_measurement_plane = intersect_ray_line_plane
@@ -167,6 +206,7 @@ undistort_points = undistort_points_to_rays
 __all__ = [
     "RayPlaneError",
     "intersect_image_points_with_plane",
+    "image_axis_to_plane_direction",
     "intersect_ray_plane",
     "intersect_ray_with_plane",
     "intersect_ray_with_measurement_plane",

@@ -40,10 +40,23 @@ quality:
 # físicos del montaje. No se rellenan valores ficticios en este ejemplo:
 # method_b:
 #   calibration_profile: null       # YAML nativo B o calibration.yaml de Calibmar pinhole.
-#   rail_reference: null            # Captura específica en z_ref_mm y pose solvePnP.
-#   z_ref_mm: null                 # Posición real de la zona más cercana al vidrio.
-#   replica_plane_offset_mm: null  # Medición física firmada respecto del tablero.
-#   rail_direction_camera: null    # Vector medido/validado, no distancia pez–vidrio.
+#   calibration_quality:
+#     maximum_per_view_error_px: 1.5
+#     minimum_center_span_fraction: 0.20
+#     minimum_tilt_span_degrees: 10.0
+#   rail_reference: null            # Ajuste solvePnP con >=2 posiciones que abarquen z_ref_mm.
+#   z_ref_mm: null                  # Posición real de la zona más cercana al vidrio.
+#   rail_reference_quality:
+#     maximum_reprojection_error_px: 1.0
+#     maximum_rail_fit_residual_mm: 1.0
+#     maximum_normal_spread_degrees: 1.0
+#   replica_plane_offset_mm: null   # Medición física firmada respecto del tablero.
+#   replica_plane_offset_direction: "rail"  # Alternativa explícita: "plane_normal".
+#   longitudinal_axis_px: [1.0, 0.0]
+#   maximum_depth_section_angle_degrees: 5.0
+#   physical_validation:
+#     maximum_absolute_error_mm: null
+#     maximum_percentage_error: 1.0
 
 # Método C se configura desde la pestaña C o sus APIs. Declare explícitamente
 # las unidades y complete únicamente con mediciones del montaje real:

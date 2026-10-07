@@ -22,7 +22,7 @@ def test_b_does_not_depend_on_aruco_or_fail_silently(points_px, image_shape, b_p
         "b-image", points_px, b_profile, rail_reference, 120.0, 0.0,
         replica_id="replica", image_shape=image_shape,
     )
-    assert result.quality.status == "WARNING"
+    assert result.quality.status == "PENDING_VALIDATION"
     assert result.delta_z_mm == pytest.approx(20.0)
     failed = measure_b_safe(
         "b-failed", {"p1": (1, 1)}, b_profile, rail_reference, 100.0, 0.0,

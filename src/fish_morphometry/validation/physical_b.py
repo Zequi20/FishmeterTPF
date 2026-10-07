@@ -4,12 +4,19 @@ from __future__ import annotations
 
 import csv
 import json
+import hashlib
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
-from ..calibration.b_calibration import BCalibrationProfile
-from ..geometry.rail_plane import RailPlaneReference, build_measurement_plane
+from ..calibration.b_calibration import BCalibrationProfile, validate_b_calibration_profile
+from ..domain.models import BMeasurementResult, QualityReport
+from ..geometry.rail_plane import (
+    RailGeometryError,
+    RailPlaneReference,
+    build_measurement_plane,
+    validate_rail_reference,
+)
 from ..geometry.ray_plane import intersect_image_points_with_plane
 
 
@@ -26,9 +33,42 @@ class PhysicalValidationRecord:
     absolute_error_mm: float
     percentage_error: float
     calibration_profile_hash: str
+    calibration_context_hash: str
     rail_reference_id: str
-    quality_status: str = "OK"
+    rail_reference_hash: str
+    replica_plane_offset_mm: float
+    replica_plane_offset_direction: str
+    maximum_absolute_error_mm: float | None
+    maximum_percentage_error: float | None
+    passed: bool | None
+    quality_status: str = "PENDING_VALIDATION"
     warnings: tuple[str, ...] = ()
+
+    @property
+    def delta_rail_mm(self) -> float:
+        return self.delta_z_mm
+
+    @property
+    def validation_hash(self) -> str:
+        payload = {
+            "image_id": self.image_id,
+            "pattern_id": self.pattern_id,
+            "position_mm": self.position_mm,
+            "delta_z_mm": self.delta_z_mm,
+            "delta_rail_mm": self.delta_rail_mm,
+            "location": self.location,
+            "expected_length_mm": self.expected_length_mm,
+            "estimated_length_mm": self.estimated_length_mm,
+            "calibration_profile_hash": self.calibration_profile_hash,
+            "calibration_context_hash": self.calibration_context_hash,
+            "rail_reference_hash": self.rail_reference_hash,
+            "replica_plane_offset_mm": self.replica_plane_offset_mm,
+            "replica_plane_offset_direction": self.replica_plane_offset_direction,
+            "maximum_absolute_error_mm": self.maximum_absolute_error_mm,
+            "maximum_percentage_error": self.maximum_percentage_error,
+        }
+        packed = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(packed).hexdigest()
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -43,7 +83,15 @@ class PhysicalValidationRecord:
             "absolute_error_mm": self.absolute_error_mm,
             "percentage_error": self.percentage_error,
             "calibration_profile_hash": self.calibration_profile_hash,
+            "calibration_context_hash": self.calibration_context_hash,
             "rail_reference_id": self.rail_reference_id,
+            "rail_reference_hash": self.rail_reference_hash,
+            "replica_plane_offset_mm": self.replica_plane_offset_mm,
+            "replica_plane_offset_direction": self.replica_plane_offset_direction,
+            "maximum_absolute_error_mm": self.maximum_absolute_error_mm,
+            "maximum_percentage_error": self.maximum_percentage_error,
+            "passed": self.passed,
+            "validation_hash": self.validation_hash,
             "quality_status": self.quality_status,
             "warnings": list(self.warnings),
         }
@@ -59,8 +107,11 @@ def validate_known_segment_b(
     capture_rail_position_mm: float,
     replica_plane_offset_mm: float = 0.0,
     *,
+    replica_plane_offset_direction: str = "rail",
     pattern_id: str = "ruler",
     location: str = "center",
+    maximum_absolute_error_mm: float | None = None,
+    maximum_percentage_error: float | None = None,
 ) -> PhysicalValidationRecord:
     """Mide un tramo conocido (por ejemplo 50 o 100 mm) en una foto B."""
 
@@ -69,10 +120,44 @@ def validate_known_segment_b(
         raise ValueError("La longitud real del patrón debe ser positiva y finita.")
     if not str(pattern_id).strip() or not str(location).strip():
         raise ValueError("El patrón y la ubicación de validación deben identificarse.")
+    validate_b_calibration_profile(calibration_profile)
+    validate_rail_reference(rail_reference)
+    if rail_reference.calibration_profile_hash != calibration_profile.profile_hash:
+        raise RailGeometryError(
+            "La referencia cámara–rail fue creada con otro perfil de calibración B."
+        )
+    if (
+        rail_reference.calibration_context_hash is not None
+        and rail_reference.calibration_context_hash
+        != calibration_profile.calibration_context_hash
+    ):
+        raise RailGeometryError(
+            "La referencia cámara–rail fue creada en otro contexto de calibración B."
+        )
+    if not math.isclose(
+        rail_reference.z_ref_mm,
+        calibration_profile.calibration_rail_position_mm,
+        rel_tol=0.0,
+        abs_tol=1e-6,
+    ):
+        raise RailGeometryError(
+            "z_ref_mm de la referencia no coincide con la zona del perfil B."
+        )
+    absolute_threshold = None
+    percentage_threshold = None
+    if maximum_absolute_error_mm is not None:
+        absolute_threshold = float(maximum_absolute_error_mm)
+        if not math.isfinite(absolute_threshold) or absolute_threshold <= 0:
+            raise ValueError("El error absoluto máximo debe ser positivo y finito.")
+    if maximum_percentage_error is not None:
+        percentage_threshold = float(maximum_percentage_error)
+        if not math.isfinite(percentage_threshold) or percentage_threshold <= 0:
+            raise ValueError("El error porcentual máximo debe ser positivo y finito.")
     plane_point, plane_normal, delta_z = build_measurement_plane(
         rail_reference,
         capture_rail_position_mm,
         replica_plane_offset_mm,
+        replica_plane_offset_direction=replica_plane_offset_direction,
     )
     points = intersect_image_points_with_plane(
         {"start": start_point_px, "end": end_point_px},
@@ -89,6 +174,19 @@ def validate_known_segment_b(
     ]
     if not math.isclose(delta_z, 0.0, abs_tol=1e-9):
         warnings.append("La posición está separada de la zona de calibración B.")
+    criteria = []
+    if absolute_threshold is not None:
+        criteria.append(abs(signed_error) <= absolute_threshold)
+    if percentage_threshold is not None:
+        criteria.append(abs(percentage) <= percentage_threshold)
+    passed = None if not criteria else all(criteria)
+    quality_status = "PENDING_VALIDATION" if passed is None else ("PASS" if passed else "FAIL")
+    if passed is None:
+        warnings.append(
+            "No se configuró un umbral de aceptación; el registro no declara exactitud."
+        )
+    elif not passed:
+        warnings.append("El error medido excede al menos uno de los umbrales configurados.")
     return PhysicalValidationRecord(
         image_id=str(image_id),
         pattern_id=str(pattern_id),
@@ -101,9 +199,45 @@ def validate_known_segment_b(
         absolute_error_mm=float(abs(signed_error)),
         percentage_error=float(percentage),
         calibration_profile_hash=calibration_profile.profile_hash,
+        calibration_context_hash=calibration_profile.calibration_context_hash,
         rail_reference_id=rail_reference.reference_id,
-        quality_status="WARNING" if delta_z else "OK",
+        rail_reference_hash=rail_reference.reference_hash,
+        replica_plane_offset_mm=float(replica_plane_offset_mm),
+        replica_plane_offset_direction=str(replica_plane_offset_direction).strip().lower(),
+        maximum_absolute_error_mm=absolute_threshold,
+        maximum_percentage_error=percentage_threshold,
+        passed=passed,
+        quality_status=quality_status,
         warnings=tuple(warnings),
+    )
+
+
+def apply_physical_validation_to_result(
+    result: BMeasurementResult,
+    record: PhysicalValidationRecord,
+) -> BMeasurementResult:
+    """Vincula un registro compatible y actualiza explícitamente el estado de B."""
+
+    if result.calibration_profile_hash != record.calibration_profile_hash:
+        raise ValueError("La validación física pertenece a otro perfil B.")
+    if result.calibration_context_hash != record.calibration_context_hash:
+        raise ValueError("La validación física pertenece a otro contexto de calibración B.")
+    if result.rail_reference_hash != record.rail_reference_hash:
+        raise ValueError("La validación física pertenece a otra geometría cámara–rail.")
+    if not math.isclose(result.capture_rail_position_mm, record.position_mm, abs_tol=1e-6):
+        raise ValueError("La validación física corresponde a otra posición del rail.")
+    if not math.isclose(
+        result.replica_plane_offset_mm, record.replica_plane_offset_mm, abs_tol=1e-6
+    ) or result.replica_plane_offset_direction != record.replica_plane_offset_direction:
+        raise ValueError("La validación física corresponde a otro offset del plano.")
+    metadata = dict(result.metadata)
+    metadata["physical_validation"] = record.to_dict()
+    warnings = tuple(dict.fromkeys((*result.quality.warnings, *record.warnings)))
+    return replace(
+        result,
+        quality=QualityReport(status=record.quality_status, warnings=warnings),
+        validation_record_hash=record.validation_hash,
+        metadata=metadata,
     )
 
 
@@ -126,6 +260,7 @@ def export_physical_validation(
         "pattern_id",
         "position_mm",
         "delta_z_mm",
+        "delta_rail_mm",
         "location",
         "expected_length_mm",
         "estimated_length_mm",
@@ -133,7 +268,15 @@ def export_physical_validation(
         "absolute_error_mm",
         "percentage_error",
         "calibration_profile_hash",
+        "calibration_context_hash",
         "rail_reference_id",
+        "rail_reference_hash",
+        "replica_plane_offset_mm",
+        "replica_plane_offset_direction",
+        "maximum_absolute_error_mm",
+        "maximum_percentage_error",
+        "passed",
+        "validation_hash",
         "quality_status",
         "warnings",
     )
@@ -147,4 +290,9 @@ def export_physical_validation(
     return {"json": json_path, "csv": csv_path}
 
 
-__all__ = ["PhysicalValidationRecord", "export_physical_validation", "validate_known_segment_b"]
+__all__ = [
+    "PhysicalValidationRecord",
+    "apply_physical_validation_to_result",
+    "export_physical_validation",
+    "validate_known_segment_b",
+]

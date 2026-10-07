@@ -1,7 +1,13 @@
 import numpy as np
 import pytest
 
-from fish_morphometry.geometry.ray_plane import RayPlaneError, intersect_ray_line_plane, intersect_ray_plane, undistort_points_to_rays
+from fish_morphometry.geometry.ray_plane import (
+    RayPlaneError,
+    image_axis_to_plane_direction,
+    intersect_ray_line_plane,
+    intersect_ray_plane,
+    undistort_points_to_rays,
+)
 
 
 def test_undistort_points_to_normalized_rays(camera_matrix, distortion):
@@ -26,3 +32,15 @@ def test_parallel_or_behind_intersection_is_rejected(ray):
 def test_nonfinite_geometry_is_rejected(camera_matrix):
     with pytest.raises(RayPlaneError):
         undistort_points_to_rays({"p": (np.nan, 1)}, camera_matrix, (0, 0, 0, 0))
+
+
+def test_image_axis_is_transformed_into_metric_plane_with_unequal_focal_lengths():
+    direction = image_axis_to_plane_direction(
+        (100, 100),
+        (1, 1),
+        ((100, 0, 100), (0, 200, 100), (0, 0, 1)),
+        (0, 0, 0, 0),
+        (0, 0, 100),
+        (0, 0, 1),
+    )
+    assert direction == pytest.approx((2 / np.sqrt(5), 1 / np.sqrt(5), 0))

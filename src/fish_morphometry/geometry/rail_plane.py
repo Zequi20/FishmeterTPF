@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
+import json
 import math
 from pathlib import Path
 from typing import Sequence
@@ -68,16 +70,59 @@ class RailPlaneReference:
     tvec_mm: Point3D
     reprojection_error_px: float
     created_at_utc: str
+    direction_source: str = "manual"
+    rail_positions_used_mm: tuple[float, ...] = ()
+    rail_fit_residual_mm: float | None = None
+    maximum_rail_fit_residual_mm: float = 1.0
+    normal_spread_degrees: float | None = None
+    maximum_normal_spread_degrees: float = 1.0
+    maximum_reprojection_error_px: float = 1.0
+    calibration_context_hash: str | None = None
 
     def __post_init__(self) -> None:
         validate_rail_reference(self)
+
+    @property
+    def reference_hash(self) -> str:
+        """Identifica de forma reproducible la geometría que afecta las medidas."""
+
+        payload = {
+            "reference_id": self.reference_id,
+            "reference_image_id": self.reference_image_id,
+            "calibration_profile_hash": self.calibration_profile_hash,
+            "calibration_context_hash": self.calibration_context_hash,
+            "plane_point_camera_mm": list(self.plane_point_camera_mm),
+            "plane_normal_camera": list(self.plane_normal_camera),
+            "z_ref_mm": self.z_ref_mm,
+            "rail_direction_camera": list(self.rail_direction_camera),
+            "positive_direction": self.positive_direction,
+            "rail_perpendicular_to_board": self.rail_perpendicular_to_board,
+            "replica_planes_parallel_to_board": self.replica_planes_parallel_to_board,
+            "board_inner_corners": list(self.board_inner_corners),
+            "square_size_mm": self.square_size_mm,
+            "rvec": list(self.rvec),
+            "tvec_mm": list(self.tvec_mm),
+            "reprojection_error_px": self.reprojection_error_px,
+            "direction_source": self.direction_source,
+            "rail_positions_used_mm": list(self.rail_positions_used_mm),
+            "rail_fit_residual_mm": self.rail_fit_residual_mm,
+            "maximum_rail_fit_residual_mm": self.maximum_rail_fit_residual_mm,
+            "normal_spread_degrees": self.normal_spread_degrees,
+            "maximum_normal_spread_degrees": self.maximum_normal_spread_degrees,
+            "maximum_reprojection_error_px": self.maximum_reprojection_error_px,
+            "created_at_utc": self.created_at_utc,
+        }
+        packed = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(packed).hexdigest()
 
     def to_dict(self) -> dict[str, object]:
         return {
             "schema": SCHEMA,
             "reference_id": self.reference_id,
+            "reference_hash": self.reference_hash,
             "reference_image_id": self.reference_image_id,
             "calibration_profile_hash": self.calibration_profile_hash,
+            "calibration_context_hash": self.calibration_context_hash,
             "plane_point_camera_mm": list(self.plane_point_camera_mm),
             "plane_normal_camera": list(self.plane_normal_camera),
             "z_ref_mm": self.z_ref_mm,
@@ -95,6 +140,15 @@ class RailPlaneReference:
                 "rvec": list(self.rvec),
                 "tvec_mm": list(self.tvec_mm),
                 "reprojection_error_px": self.reprojection_error_px,
+                "maximum_reprojection_error_px": self.maximum_reprojection_error_px,
+            },
+            "rail_fit": {
+                "direction_source": self.direction_source,
+                "positions_used_mm": list(self.rail_positions_used_mm),
+                "residual_mm": self.rail_fit_residual_mm,
+                "maximum_residual_mm": self.maximum_rail_fit_residual_mm,
+                "normal_spread_degrees": self.normal_spread_degrees,
+                "maximum_normal_spread_degrees": self.maximum_normal_spread_degrees,
             },
             "created_at_utc": self.created_at_utc,
         }
@@ -107,6 +161,10 @@ def validate_rail_reference(reference: RailPlaneReference) -> None:
         raise RailGeometryError("Debe identificarse la fotografía específica de referencia.")
     if not str(reference.calibration_profile_hash).strip():
         raise RailGeometryError("La referencia debe enlazar el hash de un perfil B.")
+    if reference.calibration_context_hash is not None and not str(
+        reference.calibration_context_hash
+    ).strip():
+        raise RailGeometryError("El hash del contexto de calibración no puede estar vacío.")
     point = np.asarray(reference.plane_point_camera_mm, dtype=float)
     if point.shape != (3,) or not np.all(np.isfinite(point)):
         raise RailGeometryError("El punto del plano de referencia debe ser 3D y finito.")
@@ -128,8 +186,52 @@ def validate_rail_reference(reference: RailPlaneReference) -> None:
     if _finite(reference.square_size_mm, "El tamaño del cuadro") <= 0:
         raise RailGeometryError("El tamaño del cuadro debe ser positivo.")
     _finite(reference.z_ref_mm, "z_ref_mm")
-    if _finite(reference.reprojection_error_px, "El error de solvePnP") < 0:
+    reprojection_error = _finite(reference.reprojection_error_px, "El error de solvePnP")
+    maximum_reprojection = _finite(
+        reference.maximum_reprojection_error_px, "El máximo error de solvePnP"
+    )
+    if reprojection_error < 0:
         raise RailGeometryError("El error de solvePnP no puede ser negativo.")
+    if maximum_reprojection <= 0:
+        raise RailGeometryError("El máximo error de solvePnP debe ser positivo.")
+    if reprojection_error > maximum_reprojection:
+        raise RailGeometryError(
+            f"El error de solvePnP ({reprojection_error:.3f} px) supera el máximo "
+            f"configurado ({maximum_reprojection:.3f} px)."
+        )
+    if reference.direction_source not in {"manual", "multi_position_fit"}:
+        raise RailGeometryError("La procedencia de la dirección del rail no es válida.")
+    maximum_fit = _finite(
+        reference.maximum_rail_fit_residual_mm, "El máximo residuo del ajuste del rail"
+    )
+    maximum_spread = _finite(
+        reference.maximum_normal_spread_degrees, "La máxima dispersión angular de normales"
+    )
+    if maximum_fit <= 0 or maximum_spread <= 0 or maximum_spread >= 90:
+        raise RailGeometryError("Los umbrales del ajuste del rail no son válidos.")
+    if reference.direction_source == "multi_position_fit":
+        if len(reference.rail_positions_used_mm) < 2:
+            raise RailGeometryError("El ajuste del rail requiere al menos dos posiciones.")
+        positions = tuple(
+            _finite(value, "Una posición usada para ajustar el rail")
+            for value in reference.rail_positions_used_mm
+        )
+        if len(set(positions)) < 2:
+            raise RailGeometryError("El ajuste del rail requiere posiciones distintas.")
+        if reference.rail_fit_residual_mm is None or reference.normal_spread_degrees is None:
+            raise RailGeometryError("Faltan diagnósticos del ajuste multiposición del rail.")
+        fit_residual = _finite(reference.rail_fit_residual_mm, "El residuo del ajuste del rail")
+        normal_spread = _finite(reference.normal_spread_degrees, "La dispersión de normales")
+        if fit_residual < 0 or fit_residual > maximum_fit:
+            raise RailGeometryError(
+                f"El residuo del rail ({fit_residual:.3f} mm) supera el máximo "
+                f"({maximum_fit:.3f} mm)."
+            )
+        if normal_spread < 0 or normal_spread > maximum_spread:
+            raise RailGeometryError(
+                f"La dispersión de normales ({normal_spread:.3f}°) supera el máximo "
+                f"({maximum_spread:.3f}°)."
+            )
 
 
 def _board_points(inner_corners: tuple[int, int], square_size_mm: float) -> np.ndarray:
@@ -140,32 +242,13 @@ def _board_points(inner_corners: tuple[int, int], square_size_mm: float) -> np.n
     return points
 
 
-def estimate_rail_reference_from_points(
+def _solve_board_pose(
     image_points_px: Sequence[Point] | np.ndarray,
     profile: BCalibrationProfile,
-    *,
-    inner_corners: tuple[int, int],
-    square_size_mm: float,
-    z_ref_mm: float,
-    rail_direction_camera: Sequence[float],
-    positive_direction: str,
-    reference_image_id: str,
-    reference_id: str = "rail-reference",
-    rail_perpendicular_to_board: bool,
-    replica_planes_parallel_to_board: bool,
-) -> RailPlaneReference:
-    """Estima el plano del tablero con solvePnP a partir de esquinas refinadas."""
+    objects: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
+    """Resuelve una pose de tablero y devuelve rvec, tvec, normal y error."""
 
-    columns, rows = int(inner_corners[0]), int(inner_corners[1])
-    square = _finite(square_size_mm, "El tamaño físico del cuadro")
-    rail_position = _finite(z_ref_mm, "z_ref_mm")
-    if not math.isclose(
-        rail_position, profile.calibration_rail_position_mm, rel_tol=0.0, abs_tol=1e-6
-    ):
-        raise RailGeometryError(
-            "z_ref_mm debe coincidir con la posición de calibración B (zona más cercana al vidrio)."
-        )
-    objects = _board_points((columns, rows), square)
     try:
         image_points = np.asarray(image_points_px, dtype=np.float64).reshape(-1, 1, 2)
     except (TypeError, ValueError) as exc:
@@ -187,9 +270,9 @@ def estimate_rail_reference_from_points(
     if not success:
         raise RailGeometryError("solvePnP no encontró una pose válida para la referencia.")
     rotation, _ = cv2.Rodrigues(rvec)
-    normal = rotation @ np.array([0.0, 0.0, 1.0])
-    normal_tuple = _unit_vector(normal, "La normal estimada")
-    direction_tuple = _unit_vector(rail_direction_camera, "La dirección del rail")
+    normal = np.asarray(_unit_vector(
+        rotation @ np.array([0.0, 0.0, 1.0]), "La normal estimada"
+    ))
     projected, _ = cv2.projectPoints(
         objects, rvec, tvec, profile.K, None if profile.D.size == 0 else profile.D
     )
@@ -197,8 +280,46 @@ def estimate_rail_reference_from_points(
         np.linalg.norm(image_points.reshape(-1, 2) - projected.reshape(-1, 2))
         / math.sqrt(len(objects))
     )
-    tvec_flat = np.asarray(tvec, dtype=float).reshape(3)
-    rvec_flat = np.asarray(rvec, dtype=float).reshape(3)
+    return (
+        np.asarray(rvec, dtype=float).reshape(3),
+        np.asarray(tvec, dtype=float).reshape(3),
+        normal,
+        reprojection_error,
+    )
+
+
+def estimate_rail_reference_from_points(
+    image_points_px: Sequence[Point] | np.ndarray,
+    profile: BCalibrationProfile,
+    *,
+    inner_corners: tuple[int, int],
+    square_size_mm: float,
+    z_ref_mm: float,
+    rail_direction_camera: Sequence[float],
+    positive_direction: str,
+    reference_image_id: str,
+    reference_id: str = "rail-reference",
+    rail_perpendicular_to_board: bool,
+    replica_planes_parallel_to_board: bool,
+    maximum_reprojection_error_px: float = 1.0,
+) -> RailPlaneReference:
+    """Estima el plano del tablero con solvePnP a partir de esquinas refinadas."""
+
+    columns, rows = int(inner_corners[0]), int(inner_corners[1])
+    square = _finite(square_size_mm, "El tamaño físico del cuadro")
+    rail_position = _finite(z_ref_mm, "z_ref_mm")
+    if not math.isclose(
+        rail_position, profile.calibration_rail_position_mm, rel_tol=0.0, abs_tol=1e-6
+    ):
+        raise RailGeometryError(
+            "z_ref_mm debe coincidir con la posición de calibración B (zona más cercana al vidrio)."
+        )
+    objects = _board_points((columns, rows), square)
+    rvec_flat, tvec_flat, normal, reprojection_error = _solve_board_pose(
+        image_points_px, profile, objects
+    )
+    normal_tuple = tuple(float(value) for value in normal)
+    direction_tuple = _unit_vector(rail_direction_camera, "La dirección del rail")
     return RailPlaneReference(
         reference_id=str(reference_id),
         reference_image_id=str(reference_image_id),
@@ -216,6 +337,140 @@ def estimate_rail_reference_from_points(
         tvec_mm=tuple(float(value) for value in tvec_flat),
         reprojection_error_px=reprojection_error,
         created_at_utc=datetime.now(timezone.utc).isoformat(),
+        maximum_reprojection_error_px=float(maximum_reprojection_error_px),
+        calibration_context_hash=profile.calibration_context_hash,
+    )
+
+
+def estimate_rail_reference_from_observations(
+    observations: Sequence[tuple[float, Sequence[Point] | np.ndarray, str]],
+    profile: BCalibrationProfile,
+    *,
+    inner_corners: tuple[int, int],
+    square_size_mm: float,
+    z_ref_mm: float,
+    reference_id: str = "rail-reference",
+    positive_direction: str = "posición de rail creciente",
+    rail_perpendicular_to_board: bool,
+    replica_planes_parallel_to_board: bool,
+    maximum_reprojection_error_px: float = 1.0,
+    maximum_rail_fit_residual_mm: float = 1.0,
+    maximum_normal_spread_degrees: float = 1.0,
+) -> RailPlaneReference:
+    """Ajusta dirección y plano del rail desde dos o más posiciones conocidas."""
+
+    if len(observations) < 2:
+        raise RailGeometryError("Se requieren al menos dos observaciones del rail.")
+    rail_position = _finite(z_ref_mm, "z_ref_mm")
+    if not math.isclose(
+        rail_position, profile.calibration_rail_position_mm, rel_tol=0.0, abs_tol=1e-6
+    ):
+        raise RailGeometryError("z_ref_mm debe coincidir con la posición de calibración B.")
+    columns, rows = int(inner_corners[0]), int(inner_corners[1])
+    square = _finite(square_size_mm, "El tamaño físico del cuadro")
+    if columns < 2 or rows < 2 or square <= 0:
+        raise RailGeometryError("La geometría del tablero de referencia no es válida.")
+    max_reprojection = _finite(
+        maximum_reprojection_error_px, "El máximo error de solvePnP"
+    )
+    max_fit = _finite(maximum_rail_fit_residual_mm, "El máximo residuo del rail")
+    max_spread = _finite(
+        maximum_normal_spread_degrees, "La máxima dispersión de normales"
+    )
+    if max_reprojection <= 0 or max_fit <= 0 or max_spread <= 0 or max_spread >= 90:
+        raise RailGeometryError("Los umbrales de referencia cámara–rail no son válidos.")
+
+    objects = _board_points((columns, rows), square)
+    positions: list[float] = []
+    image_ids: list[str] = []
+    rvecs: list[np.ndarray] = []
+    points: list[np.ndarray] = []
+    normals: list[np.ndarray] = []
+    errors: list[float] = []
+    for position_raw, image_points, image_id in observations:
+        position = _finite(position_raw, "Una posición del rail")
+        if not str(image_id).strip():
+            raise RailGeometryError("Cada observación del rail debe identificar su imagen.")
+        rvec, point, normal, error = _solve_board_pose(image_points, profile, objects)
+        if error > max_reprojection:
+            raise RailGeometryError(
+                f"La referencia {image_id} tiene error {error:.3f} px; "
+                f"supera {max_reprojection:.3f} px."
+            )
+        positions.append(position)
+        image_ids.append(str(image_id))
+        rvecs.append(rvec)
+        points.append(point)
+        normals.append(normal)
+        errors.append(error)
+    if len(set(positions)) < 2:
+        raise RailGeometryError("Las observaciones deben usar posiciones de rail distintas.")
+    if not min(positions) <= rail_position <= max(positions):
+        raise RailGeometryError("Las posiciones observadas deben abarcar z_ref_mm.")
+
+    deltas = np.asarray(positions, dtype=float) - rail_position
+    design = np.column_stack((np.ones(len(deltas)), deltas))
+    coefficients, *_ = np.linalg.lstsq(design, np.asarray(points), rcond=None)
+    point_at_reference = coefficients[0]
+    direction_raw = coefficients[1]
+    direction_norm = float(np.linalg.norm(direction_raw))
+    if not math.isfinite(direction_norm) or direction_norm <= 0:
+        raise RailGeometryError("No se pudo estimar una dirección de rail no nula.")
+    if not math.isclose(direction_norm, 1.0, rel_tol=0.05, abs_tol=0.05):
+        raise RailGeometryError(
+            "El desplazamiento pose/rail no conserva la escala métrica esperada; "
+            f"la pendiente tiene norma {direction_norm:.4f}."
+        )
+    direction = direction_raw / direction_norm
+    predicted = design @ coefficients
+    fit_residual = float(
+        np.sqrt(np.mean(np.sum((np.asarray(points) - predicted) ** 2, axis=1)))
+    )
+
+    aligned_normals = [normals[0]]
+    for normal in normals[1:]:
+        aligned_normals.append(normal if np.dot(normal, normals[0]) >= 0 else -normal)
+    average_normal = np.mean(aligned_normals, axis=0)
+    average_normal /= np.linalg.norm(average_normal)
+    normal_spread = max(
+        math.degrees(math.acos(float(np.clip(np.dot(normal, average_normal), -1.0, 1.0))))
+        for normal in aligned_normals
+    )
+    if fit_residual > max_fit:
+        raise RailGeometryError(
+            f"El residuo del ajuste del rail ({fit_residual:.3f} mm) supera "
+            f"{max_fit:.3f} mm."
+        )
+    if normal_spread > max_spread:
+        raise RailGeometryError(
+            f"La dispersión angular ({normal_spread:.3f}°) supera {max_spread:.3f}°."
+        )
+    nearest = int(np.argmin(np.abs(deltas)))
+    return RailPlaneReference(
+        reference_id=str(reference_id),
+        reference_image_id=" | ".join(image_ids),
+        calibration_profile_hash=profile.profile_hash,
+        plane_point_camera_mm=tuple(float(value) for value in point_at_reference),
+        plane_normal_camera=tuple(float(value) for value in average_normal),
+        z_ref_mm=rail_position,
+        rail_direction_camera=tuple(float(value) for value in direction),
+        positive_direction=str(positive_direction),
+        rail_perpendicular_to_board=bool(rail_perpendicular_to_board),
+        replica_planes_parallel_to_board=bool(replica_planes_parallel_to_board),
+        board_inner_corners=(columns, rows),
+        square_size_mm=square,
+        rvec=tuple(float(value) for value in rvecs[nearest]),
+        tvec_mm=tuple(float(value) for value in point_at_reference),
+        reprojection_error_px=max(errors),
+        created_at_utc=datetime.now(timezone.utc).isoformat(),
+        direction_source="multi_position_fit",
+        rail_positions_used_mm=tuple(positions),
+        rail_fit_residual_mm=fit_residual,
+        maximum_rail_fit_residual_mm=max_fit,
+        normal_spread_degrees=normal_spread,
+        maximum_normal_spread_degrees=max_spread,
+        maximum_reprojection_error_px=max_reprojection,
+        calibration_context_hash=profile.calibration_context_hash,
     )
 
 
@@ -254,15 +509,59 @@ def estimate_rail_reference_from_image(
     return estimate_rail_reference_from_points(refined, profile, **kwargs)  # type: ignore[arg-type]
 
 
+def estimate_rail_reference_from_images(
+    observations: Sequence[tuple[float, np.ndarray, str]],
+    profile: BCalibrationProfile,
+    **kwargs: object,
+) -> RailPlaneReference:
+    """Detecta el tablero en varias posiciones y ajusta la geometría del rail."""
+
+    inner_corners_raw = kwargs.get("inner_corners")
+    if not isinstance(inner_corners_raw, (tuple, list)) or len(inner_corners_raw) != 2:
+        raise RailGeometryError("Debe indicar inner_corners=(columnas, filas).")
+    inner_corners = (int(inner_corners_raw[0]), int(inner_corners_raw[1]))
+    termination = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 40, 0.001)
+    point_observations: list[tuple[float, np.ndarray, str]] = []
+    for position, image_bgr, image_id in observations:
+        if image_bgr is None or not isinstance(image_bgr, np.ndarray) or image_bgr.ndim < 2:
+            raise RailGeometryError(f"La fotografía de referencia {image_id} es ilegible.")
+        height, width = image_bgr.shape[:2]
+        if (width, height) != profile.resolution:
+            raise RailGeometryError(
+                f"Resolución incompatible en {image_id}: {width}×{height}; perfil B "
+                f"{profile.resolution[0]}×{profile.resolution[1]}."
+            )
+        gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY) if image_bgr.ndim == 3 else image_bgr
+        try:
+            found, corners = cv2.findChessboardCorners(
+                gray,
+                inner_corners,
+                flags=cv2.CALIB_CB_ADAPTIVE_THRESH | cv2.CALIB_CB_NORMALIZE_IMAGE,
+            )
+        except cv2.error as exc:
+            raise RailGeometryError(
+                f"OpenCV no pudo detectar el tablero en {image_id}: {exc}"
+            ) from exc
+        if not found or corners is None:
+            raise RailGeometryError(f"No se detectó completo el tablero en {image_id}.")
+        refined = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), termination)
+        point_observations.append((float(position), refined, str(image_id)))
+    return estimate_rail_reference_from_observations(
+        point_observations, profile, **kwargs  # type: ignore[arg-type]
+    )
+
+
 def build_measurement_plane(
     reference: RailPlaneReference,
     capture_rail_position_mm: float,
     replica_plane_offset_mm: float,
+    *,
+    replica_plane_offset_direction: str = "rail",
 ) -> tuple[Point3D, Point3D, float]:
     """Traslada el plano por el rail y devuelve ``(P0,n,delta_z_mm)``.
 
-    El desplazamiento de la réplica es firmado: positivo sigue el sentido
-    positivo documentado del rail.
+    El desplazamiento de la réplica es firmado. Con ``rail`` sigue el sentido
+    positivo documentado del rail; con ``plane_normal`` sigue la normal guardada.
     """
 
     validate_rail_reference(reference)
@@ -273,15 +572,27 @@ def build_measurement_plane(
         )
     capture = _finite(capture_rail_position_mm, "La posición del carrito")
     offset = _finite(replica_plane_offset_mm, "El desplazamiento al plano de simetría")
+    offset_direction = str(replica_plane_offset_direction).strip().lower()
+    if offset_direction not in {"rail", "plane_normal"}:
+        raise RailGeometryError(
+            "La dirección del offset debe ser 'rail' o 'plane_normal'."
+        )
     delta_z = capture - reference.z_ref_mm
-    point = np.asarray(reference.plane_point_camera_mm, dtype=float) + np.asarray(
-        reference.rail_direction_camera, dtype=float
-    ) * (delta_z + offset)
+    rail_direction = np.asarray(reference.rail_direction_camera, dtype=float)
+    plane_normal = np.asarray(
+        _unit_vector(reference.plane_normal_camera, "La normal del plano"), dtype=float
+    )
+    offset_axis = rail_direction if offset_direction == "rail" else plane_normal
+    point = (
+        np.asarray(reference.plane_point_camera_mm, dtype=float)
+        + rail_direction * delta_z
+        + offset_axis * offset
+    )
     if not np.all(np.isfinite(point)):
         raise RailGeometryError("El plano de medición calculado no es finito.")
     return (
         (float(point[0]), float(point[1]), float(point[2])),
-        _unit_vector(reference.plane_normal_camera, "La normal del plano"),
+        tuple(float(value) for value in plane_normal),
         float(delta_z),
     )
 
@@ -309,10 +620,16 @@ def load_rail_reference(path: str | Path) -> RailPlaneReference:
         assumptions = payload["assumptions"]
         board = payload["board"]
         pose = payload["solve_pnp"]
-        return RailPlaneReference(
+        rail_fit = payload.get("rail_fit") or {}
+        reference = RailPlaneReference(
             reference_id=str(payload["reference_id"]),
             reference_image_id=str(payload["reference_image_id"]),
             calibration_profile_hash=str(payload["calibration_profile_hash"]),
+            calibration_context_hash=(
+                None
+                if payload.get("calibration_context_hash") is None
+                else str(payload["calibration_context_hash"])
+            ),
             plane_point_camera_mm=tuple(float(v) for v in payload["plane_point_camera_mm"]),
             plane_normal_camera=tuple(float(v) for v in payload["plane_normal_camera"]),
             z_ref_mm=float(payload["z_ref_mm"]),
@@ -326,7 +643,32 @@ def load_rail_reference(path: str | Path) -> RailPlaneReference:
             tvec_mm=tuple(float(v) for v in pose["tvec_mm"]),
             reprojection_error_px=float(pose["reprojection_error_px"]),
             created_at_utc=str(payload["created_at_utc"]),
+            direction_source=str(rail_fit.get("direction_source", "manual")),
+            rail_positions_used_mm=tuple(
+                float(value) for value in rail_fit.get("positions_used_mm", ())
+            ),
+            rail_fit_residual_mm=(
+                None if rail_fit.get("residual_mm") is None else float(rail_fit["residual_mm"])
+            ),
+            maximum_rail_fit_residual_mm=float(rail_fit.get("maximum_residual_mm", 1.0)),
+            normal_spread_degrees=(
+                None
+                if rail_fit.get("normal_spread_degrees") is None
+                else float(rail_fit["normal_spread_degrees"])
+            ),
+            maximum_normal_spread_degrees=float(
+                rail_fit.get("maximum_normal_spread_degrees", 1.0)
+            ),
+            maximum_reprojection_error_px=float(
+                pose.get("maximum_reprojection_error_px", 1.0)
+            ),
         )
+        stored_hash = payload.get("reference_hash")
+        if stored_hash is not None and str(stored_hash) != reference.reference_hash:
+            raise RailGeometryError("El hash de la referencia cámara–rail no coincide.")
+        return reference
+    except RailGeometryError:
+        raise
     except (KeyError, TypeError, ValueError) as exc:
         raise RailGeometryError(f"La referencia cámara–rail está incompleta: {exc}") from exc
 
@@ -345,6 +687,8 @@ __all__ = [
     "create_rail_reference_from_image",
     "create_rail_reference_from_points",
     "estimate_rail_reference_from_image",
+    "estimate_rail_reference_from_images",
+    "estimate_rail_reference_from_observations",
     "estimate_rail_reference_from_points",
     "load_rail_reference",
     "save_rail_reference",

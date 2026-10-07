@@ -2,7 +2,10 @@ import math
 
 import pytest
 
-from fish_morphometry.measurements.morphometry import measure_projected_morphometry
+from fish_morphometry.measurements.morphometry import (
+    measure_projected_morphometry,
+    measure_projected_morphometry_3d,
+)
 
 
 def _rotate(point, angle_degrees):
@@ -44,3 +47,49 @@ def test_depth_from_different_longitudinal_sections_is_invalidated():
     assert result.body_depth_valid is False
     assert result.body_depth_section_offset_mm == pytest.approx(5.0)
     assert result.body_depth_section_angle_degrees > 5
+
+
+def test_3d_diagonal_is_projected_and_rotates_with_anatomical_axis():
+    points = {
+        "p1": (0, 0, 100),
+        "p2": (4, 4, 100),
+        "p3": (20, -15, 100),
+        "p4": (20, 25, 100),
+    }
+    baseline = measure_projected_morphometry_3d(points, (1, 0, 0), (0, 0, 1))
+    angle = math.radians(37)
+
+    def rotate3(point):
+        x, y, z = point
+        return (
+            math.cos(angle) * x - math.sin(angle) * y,
+            math.sin(angle) * x + math.cos(angle) * y,
+            z,
+        )
+
+    rotated = measure_projected_morphometry_3d(
+        {name: rotate3(point) for name, point in points.items()},
+        rotate3((1, 0, 0)),
+        (0, 0, 1),
+    )
+    assert baseline.total_length_mm == pytest.approx(4.0)
+    assert baseline.total_length_euclidean_mm == pytest.approx(math.sqrt(32))
+    assert rotated.total_length_mm == pytest.approx(baseline.total_length_mm)
+    assert rotated.body_depth_mm == pytest.approx(baseline.body_depth_mm)
+
+
+def test_3d_depth_from_different_sections_is_invalidated():
+    result = measure_projected_morphometry_3d(
+        {
+            "p1": (0, 0, 100),
+            "p2": (40, 0, 100),
+            "p3": (20, -15, 100),
+            "p4": (25, 25, 100),
+        },
+        (1, 0, 0),
+        (0, 0, 1),
+        maximum_depth_section_angle_degrees=5,
+    )
+    assert result.body_depth_mm is None
+    assert result.body_depth_valid is False
+    assert result.body_depth_section_offset_mm == pytest.approx(5.0)

@@ -31,7 +31,7 @@ from ..calibration.calibmar_pinhole_import import import_calibmar_pinhole
 from ..geometry.rail_plane import (
     RailGeometryError,
     RailPlaneReference,
-    estimate_rail_reference_from_image,
+    estimate_rail_reference_from_images,
     load_rail_reference,
     save_rail_reference,
 )
@@ -53,6 +53,7 @@ from ..methods.b import measure_b_safe
 from ..methods.c import measure_c_safe
 from ..validation.physical_b import (
     PhysicalValidationRecord,
+    apply_physical_validation_to_result,
     export_physical_validation,
     validate_known_segment_b,
 )
@@ -71,6 +72,10 @@ from ..vision.aruco_detector import (
 from .image_panel import ImagePanel
 from .results_panel import ResultsPanel
 from .styles import configure_styles
+
+
+def _format_optional(value: float | None) -> str:
+    return "—" if value is None else f"{value:.3f}"
 
 
 class MainWindow:
@@ -144,6 +149,15 @@ class MainWindow:
         self.b_repetition_var = tk.StringVar(value="")
         self.b_position_var = tk.StringVar(value="")
         self.b_offset_var = tk.StringVar(value="")
+        self.b_offset_direction_var = tk.StringVar(value="rail")
+        self.b_validation_absolute_error_var = tk.StringVar(value="")
+        self.b_validation_percentage_error_var = tk.StringVar(value="1.0")
+        self.b_calibration_max_view_error_var = tk.StringVar(value="1.5")
+        self.b_calibration_min_center_span_var = tk.StringVar(value="0.20")
+        self.b_calibration_min_tilt_span_var = tk.StringVar(value="10.0")
+        self.b_reference_max_reprojection_var = tk.StringVar(value="1.0")
+        self.b_reference_max_fit_residual_var = tk.StringVar(value="1.0")
+        self.b_reference_max_normal_spread_var = tk.StringVar(value="1.0")
         self.b_rail_x_var = tk.StringVar(value="")
         self.b_rail_y_var = tk.StringVar(value="")
         self.b_rail_z_var = tk.StringVar(value="")
@@ -477,6 +491,22 @@ class MainWindow:
         ttk.Entry(card, textvariable=self.b_square_var, width=10).grid(
             row=6, column=1, sticky="ew", pady=(5, 0), padx=(0, 7)
         )
+        ttk.Label(card, text="Calib. máx. px / span / °", style="Input.TLabel").grid(
+            row=6, column=2, sticky="w", pady=(5, 0), padx=(4, 5)
+        )
+        calibration_quality = ttk.Frame(card, style="Card.TFrame")
+        calibration_quality.grid(row=6, column=3, sticky="ew", pady=(5, 0))
+        for index, variable in enumerate(
+            (
+                self.b_calibration_max_view_error_var,
+                self.b_calibration_min_center_span_var,
+                self.b_calibration_min_tilt_span_var,
+            )
+        ):
+            calibration_quality.columnconfigure(index, weight=1)
+            ttk.Entry(calibration_quality, textvariable=variable, width=4).grid(
+                row=0, column=index, sticky="ew", padx=(0 if index == 0 else 2, 0)
+            )
 
         ttk.Separator(card, orient="horizontal").grid(row=7, column=0, columnspan=4, sticky="ew", pady=(10, 8))
         ttk.Label(card, text="2 · Referencia cámara–rail", style="CardTitle.TLabel").grid(
@@ -491,7 +521,7 @@ class MainWindow:
         ttk.Label(card, textvariable=self.b_reference_status_var, style="CardMuted.TLabel", wraplength=430).grid(
             row=10, column=0, columnspan=4, sticky="w", pady=(5, 0)
         )
-        ttk.Label(card, text="Dirección rail en cámara", style="Input.TLabel").grid(
+        ttk.Label(card, text="Dirección estimada del rail", style="Input.TLabel").grid(
             row=11, column=0, sticky="w", pady=(6, 0), padx=(0, 5)
         )
         direction = ttk.Frame(card, style="Card.TFrame")
@@ -506,7 +536,7 @@ class MainWindow:
                 row=0, column=label_column, sticky="e", padx=(0, 3)
             )
             ttk.Entry(direction, textvariable=variable, width=7).grid(
-                row=0, column=entry_column, sticky="ew", padx=(0, 5)
+                row=0, column=entry_column, sticky="ew", padx=(0, 5), state="readonly"
             )
         ttk.Label(card, text="Sentido positivo", style="Input.TLabel").grid(
             row=12, column=0, sticky="w", pady=(5, 0), padx=(0, 5)
@@ -525,29 +555,82 @@ class MainWindow:
             variable=self.b_parallel_planes_var,
         ).grid(row=14, column=0, columnspan=4, sticky="w", pady=(2, 0))
 
-        ttk.Separator(card, orient="horizontal").grid(row=15, column=0, columnspan=4, sticky="ew", pady=(10, 8))
-        ttk.Label(card, text="3 · Captura y réplica", style="CardTitle.TLabel").grid(
-            row=16, column=0, columnspan=4, sticky="w"
+        ttk.Label(card, text="Ref. máx. px / residuo mm / °", style="Input.TLabel").grid(
+            row=15, column=0, columnspan=2, sticky="w", pady=(5, 0), padx=(0, 5)
         )
-        ttk.Label(card, text="Réplica", style="Input.TLabel").grid(row=17, column=0, sticky="w", pady=(6, 0), padx=(0, 5))
-        ttk.Entry(card, textvariable=self.b_replica_var, width=12).grid(row=17, column=1, sticky="ew", pady=(6, 0), padx=(0, 7))
-        ttk.Label(card, text="Repetición", style="Input.TLabel").grid(row=17, column=2, sticky="w", pady=(6, 0), padx=(4, 5))
-        ttk.Entry(card, textvariable=self.b_repetition_var, width=9).grid(row=17, column=3, sticky="ew", pady=(6, 0))
-        ttk.Label(card, text="Posición carrito (mm)", style="Input.TLabel").grid(row=18, column=0, sticky="w", pady=(5, 0), padx=(0, 5))
-        ttk.Entry(card, textvariable=self.b_position_var, width=10).grid(row=18, column=1, sticky="ew", pady=(5, 0), padx=(0, 7))
-        ttk.Label(card, text="Offset simetría (mm)", style="Input.TLabel").grid(row=18, column=2, sticky="w", pady=(5, 0), padx=(4, 5))
-        ttk.Entry(card, textvariable=self.b_offset_var, width=9).grid(row=18, column=3, sticky="ew", pady=(5, 0))
+        reference_quality = ttk.Frame(card, style="Card.TFrame")
+        reference_quality.grid(row=15, column=2, columnspan=2, sticky="ew", pady=(5, 0))
+        for index, variable in enumerate(
+            (
+                self.b_reference_max_reprojection_var,
+                self.b_reference_max_fit_residual_var,
+                self.b_reference_max_normal_spread_var,
+            )
+        ):
+            reference_quality.columnconfigure(index, weight=1)
+            ttk.Entry(reference_quality, textvariable=variable, width=5).grid(
+                row=0, column=index, sticky="ew", padx=(0 if index == 0 else 2, 0)
+            )
+
+        ttk.Separator(card, orient="horizontal").grid(row=16, column=0, columnspan=4, sticky="ew", pady=(10, 8))
+        ttk.Label(card, text="3 · Captura y réplica", style="CardTitle.TLabel").grid(
+            row=17, column=0, columnspan=4, sticky="w"
+        )
+        ttk.Label(card, text="Réplica", style="Input.TLabel").grid(row=18, column=0, sticky="w", pady=(6, 0), padx=(0, 5))
+        ttk.Entry(card, textvariable=self.b_replica_var, width=12).grid(row=18, column=1, sticky="ew", pady=(6, 0), padx=(0, 7))
+        ttk.Label(card, text="Repetición", style="Input.TLabel").grid(row=18, column=2, sticky="w", pady=(6, 0), padx=(4, 5))
+        ttk.Entry(card, textvariable=self.b_repetition_var, width=9).grid(row=18, column=3, sticky="ew", pady=(6, 0))
+        ttk.Label(card, text="Posición carrito (mm)", style="Input.TLabel").grid(row=19, column=0, sticky="w", pady=(5, 0), padx=(0, 5))
+        ttk.Entry(card, textvariable=self.b_position_var, width=10).grid(row=19, column=1, sticky="ew", pady=(5, 0), padx=(0, 7))
+        ttk.Label(card, text="Offset simetría (mm)", style="Input.TLabel").grid(row=19, column=2, sticky="w", pady=(5, 0), padx=(4, 5))
+        ttk.Entry(card, textvariable=self.b_offset_var, width=9).grid(row=19, column=3, sticky="ew", pady=(5, 0))
+        ttk.Label(card, text="Dirección del offset", style="Input.TLabel").grid(
+            row=20, column=0, sticky="w", pady=(5, 0), padx=(0, 5)
+        )
+        ttk.Combobox(
+            card,
+            textvariable=self.b_offset_direction_var,
+            values=("rail", "plane_normal"),
+            state="readonly",
+            width=13,
+        ).grid(row=20, column=1, sticky="ew", pady=(5, 0), padx=(0, 7))
+        ttk.Label(card, text="Eje imagen / tolerancia (°)", style="Input.TLabel").grid(
+            row=20, column=2, sticky="w", pady=(5, 0), padx=(4, 5)
+        )
+        axis_tolerance = ttk.Frame(card, style="Card.TFrame")
+        axis_tolerance.grid(row=20, column=3, sticky="ew", pady=(5, 0))
+        axis_tolerance.columnconfigure(0, weight=1)
+        axis_tolerance.columnconfigure(1, weight=1)
+        ttk.Entry(axis_tolerance, textvariable=self.axis_angle_var, width=5).grid(
+            row=0, column=0, sticky="ew", padx=(0, 2)
+        )
+        ttk.Entry(axis_tolerance, textvariable=self.depth_section_tolerance_var, width=5).grid(
+            row=0, column=1, sticky="ew", padx=(2, 0)
+        )
+        ttk.Label(card, text="Máx. error validación (mm / %)", style="Input.TLabel").grid(
+            row=21, column=0, columnspan=2, sticky="w", pady=(5, 0), padx=(0, 5)
+        )
+        validation_limits = ttk.Frame(card, style="Card.TFrame")
+        validation_limits.grid(row=21, column=2, columnspan=2, sticky="ew", pady=(5, 0))
+        validation_limits.columnconfigure(0, weight=1)
+        validation_limits.columnconfigure(1, weight=1)
+        ttk.Entry(validation_limits, textvariable=self.b_validation_absolute_error_var, width=7).grid(
+            row=0, column=0, sticky="ew", padx=(0, 2)
+        )
+        ttk.Entry(validation_limits, textvariable=self.b_validation_percentage_error_var, width=7).grid(
+            row=0, column=1, sticky="ew", padx=(2, 0)
+        )
         ttk.Label(card, textvariable=self.b_inputs_status_var, style="CardMuted.TLabel", wraplength=430).grid(
-            row=19, column=0, columnspan=4, sticky="w", pady=(5, 0)
+            row=22, column=0, columnspan=4, sticky="w", pady=(5, 0)
         )
         self.calculate_b_button = ttk.Button(
             card, text="Calcular B", style="Action.TButton", command=self._calculate_b
         )
-        self.calculate_b_button.grid(row=20, column=0, columnspan=2, sticky="ew", pady=(7, 0), padx=(0, 4))
+        self.calculate_b_button.grid(row=23, column=0, columnspan=2, sticky="ew", pady=(7, 0), padx=(0, 4))
         self.validate_b_button = ttk.Button(
             card, text="Registrar validación física…", style="Action.TButton", command=self._record_b_validation
         )
-        self.validate_b_button.grid(row=20, column=2, columnspan=2, sticky="ew", pady=(7, 0), padx=(4, 0))
+        self.validate_b_button.grid(row=23, column=2, columnspan=2, sticky="ew", pady=(7, 0), padx=(4, 0))
         for variable in (
             self.b_replica_var,
             self.b_repetition_var,
@@ -696,6 +779,18 @@ class MainWindow:
             self.b_rows_var.set(str(profile.board_inner_corners[1]))
         if profile.square_size_mm is not None:
             self.b_square_var.set(f"{profile.square_size_mm:g}")
+        calibration_quality = profile.source_metadata or {}
+        for key, variable in (
+            ("maximum_per_view_error_px", self.b_calibration_max_view_error_var),
+            ("minimum_center_span_fraction", self.b_calibration_min_center_span_var),
+            ("minimum_tilt_span_degrees", self.b_calibration_min_tilt_span_var),
+        ):
+            try:
+                value = float(calibration_quality[key])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if math.isfinite(value):
+                variable.set(f"{value:g}")
         rms = "—" if profile.rms_px is None else f"{profile.rms_px:.4f} px"
         self.b_profile_status_var.set(
             f"{profile.source} · {profile.model} · {profile.resolution[0]}×{profile.resolution[1]} · "
@@ -715,6 +810,18 @@ class MainWindow:
             columns = int(self.b_cols_var.get())
             rows = int(self.b_rows_var.get())
             square = self._float_value(self.b_square_var.get(), "Tamaño de cuadro")
+            maximum_view_error = self._float_value(
+                self.b_calibration_max_view_error_var.get(),
+                "Error máximo por vista de calibración",
+            )
+            minimum_center_span = self._float_value(
+                self.b_calibration_min_center_span_var.get(),
+                "Cobertura mínima de centros",
+            )
+            minimum_tilt_span = self._float_value(
+                self.b_calibration_min_tilt_span_var.get(),
+                "Diversidad angular mínima",
+            )
         except (TypeError, ValueError) as exc:
             self._show_error(str(exc))
             return
@@ -731,6 +838,9 @@ class MainWindow:
                 square_size_mm=square,
                 resolution=None,
                 calibration_rail_position_mm=calibration_position,
+                maximum_per_view_error_px=maximum_view_error,
+                minimum_center_span_fraction=minimum_center_span,
+                minimum_tilt_span_degrees=minimum_tilt_span,
             )
         except CalibrationError as exc:
             rejected = ""
@@ -785,10 +895,34 @@ class MainWindow:
         if reference.calibration_profile_hash != self.b_profile.profile_hash:
             self._show_error("La referencia no corresponde al hash del perfil B cargado.")
             return
+        if (
+            reference.calibration_context_hash is not None
+            and reference.calibration_context_hash
+            != self.b_profile.calibration_context_hash
+        ):
+            self._show_error(
+                "La referencia no corresponde al contexto experimental del perfil B cargado."
+            )
+            return
         self.b_rail_reference = reference
+        self.b_rail_x_var.set(f"{reference.rail_direction_camera[0]:.8g}")
+        self.b_rail_y_var.set(f"{reference.rail_direction_camera[1]:.8g}")
+        self.b_rail_z_var.set(f"{reference.rail_direction_camera[2]:.8g}")
+        self.b_positive_direction_var.set(reference.positive_direction)
+        self.b_rail_perpendicular_var.set(reference.rail_perpendicular_to_board)
+        self.b_parallel_planes_var.set(reference.replica_planes_parallel_to_board)
+        self.b_reference_max_reprojection_var.set(
+            f"{reference.maximum_reprojection_error_px:g}"
+        )
+        self.b_reference_max_fit_residual_var.set(
+            f"{reference.maximum_rail_fit_residual_mm:g}"
+        )
+        self.b_reference_max_normal_spread_var.set(
+            f"{reference.maximum_normal_spread_degrees:g}"
+        )
         self.b_reference_status_var.set(
             f"{reference.reference_id} · foto {reference.reference_image_id} · z_ref {reference.z_ref_mm:g} mm · "
-            f"solvePnP {reference.reprojection_error_px:.3f} px"
+            f"solvePnP {reference.reprojection_error_px:.3f} px · {reference.direction_source}"
         )
         self.status_var.set(f"Referencia cámara–rail cargada: {Path(path).name}.")
         self._refresh_calculate_states()
@@ -804,38 +938,60 @@ class MainWindow:
             z_ref = self._float_value(
                 self.b_calibration_position_var.get(), "Posición z_ref de calibración B"
             )
-            direction = (
-                self._float_value(self.b_rail_x_var.get(), "Dirección rail x"),
-                self._float_value(self.b_rail_y_var.get(), "Dirección rail y"),
-                self._float_value(self.b_rail_z_var.get(), "Dirección rail z"),
+            positive = self.b_positive_direction_var.get().strip() or "posición de rail creciente"
+            maximum_reprojection = self._float_value(
+                self.b_reference_max_reprojection_var.get(),
+                "Error máximo de solvePnP",
             )
-            positive = self.b_positive_direction_var.get().strip()
-            if not positive:
-                raise ValueError("Documente el sentido positivo del rail.")
+            maximum_fit_residual = self._float_value(
+                self.b_reference_max_fit_residual_var.get(),
+                "Residuo máximo del rail",
+            )
+            maximum_normal_spread = self._float_value(
+                self.b_reference_max_normal_spread_var.get(),
+                "Dispersión angular máxima",
+            )
         except (TypeError, ValueError) as exc:
             self._show_error(str(exc))
             return
-        path = filedialog.askopenfilename(
-            title="Seleccionar fotografía de referencia del tablero en z_ref",
+        paths = filedialog.askopenfilenames(
+            title="Seleccionar al menos dos referencias del tablero en posiciones conocidas",
             filetypes=(("Imágenes", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff"), ("Todos", "*.*")),
         )
-        if not path:
+        if not paths:
+            return
+        if len(paths) < 2:
+            self._show_error("Seleccione al menos dos fotografías en posiciones distintas del rail.")
             return
         try:
-            data = np.fromfile(path, dtype=np.uint8)
-            image = cv2.imdecode(data, cv2.IMREAD_COLOR)
-            reference = estimate_rail_reference_from_image(
-                image,
+            observations = []
+            for index, path in enumerate(paths):
+                prompt_options: dict[str, object] = {"parent": self.root}
+                if index == 0:
+                    prompt_options["initialvalue"] = z_ref
+                position = simpledialog.askfloat(
+                    "Posición del rail",
+                    f"Posición física en mm para {Path(path).name}:",
+                    **prompt_options,
+                )
+                if position is None:
+                    return
+                data = np.fromfile(path, dtype=np.uint8)
+                image = cv2.imdecode(data, cv2.IMREAD_COLOR)
+                observations.append((position, image, Path(path).name))
+            reference = estimate_rail_reference_from_images(
+                observations,
                 self.b_profile,
                 inner_corners=(columns, rows),
                 square_size_mm=square,
                 z_ref_mm=z_ref,
-                rail_direction_camera=direction,
                 positive_direction=positive,
-                reference_image_id=Path(path).name,
-                reference_id=f"{Path(path).stem}-rail-reference",
+                reference_id=f"{Path(paths[0]).stem}-rail-reference",
                 rail_perpendicular_to_board=self.b_rail_perpendicular_var.get(),
                 replica_planes_parallel_to_board=self.b_parallel_planes_var.get(),
+                maximum_reprojection_error_px=maximum_reprojection,
+                maximum_rail_fit_residual_mm=maximum_fit_residual,
+                maximum_normal_spread_degrees=maximum_normal_spread,
             )
         except (OSError, cv2.error, RailGeometryError) as exc:
             self._show_error(f"No se pudo crear la referencia cámara–rail: {exc}")
@@ -854,9 +1010,13 @@ class MainWindow:
             self._show_error(f"No se pudo guardar la referencia: {exc}")
             return
         self.b_rail_reference = reference
+        self.b_rail_x_var.set(f"{reference.rail_direction_camera[0]:.8g}")
+        self.b_rail_y_var.set(f"{reference.rail_direction_camera[1]:.8g}")
+        self.b_rail_z_var.set(f"{reference.rail_direction_camera[2]:.8g}")
         self.b_reference_status_var.set(
-            f"{reference.reference_id} · foto {reference.reference_image_id} · z_ref {reference.z_ref_mm:g} mm · "
-            f"solvePnP {reference.reprojection_error_px:.3f} px"
+            f"{reference.reference_id} · {len(reference.rail_positions_used_mm)} posiciones · "
+            f"residuo rail {reference.rail_fit_residual_mm:.3f} mm · "
+            f"solvePnP máx. {reference.reprojection_error_px:.3f} px"
         )
         self.status_var.set(f"Referencia guardada: {Path(output).name}.")
         self._refresh_calculate_states()
@@ -1410,6 +1570,7 @@ class MainWindow:
             assert self.b_profile is not None and self.b_rail_reference is not None
             position = self._float_value(self.b_position_var.get(), "Posición del carrito")
             offset = self._float_value(self.b_offset_var.get(), "Offset al plano de simetría")
+            longitudinal_axis, depth_tolerance = self._direct_morphometry_parameters()
             self.result_b = measure_b_safe(
                 self.image_path.stem,
                 self.points,
@@ -1420,6 +1581,9 @@ class MainWindow:
                 replica_id=self.b_replica_var.get().strip(),
                 repetition=self.b_repetition_var.get().strip() or None,
                 image_shape=self.image_bgr.shape,
+                longitudinal_axis_px=longitudinal_axis,
+                maximum_depth_section_angle_degrees=depth_tolerance,
+                replica_plane_offset_direction=self.b_offset_direction_var.get(),
             )
         except (MeasurementError, RailGeometryError, ValueError) as exc:
             self._show_error(str(exc))
@@ -1431,7 +1595,7 @@ class MainWindow:
         else:
             self.status_var.set(
                 f"Método B calculado: LT {self.result_b.total_length_mm:.3f} mm · "
-                f"PC {self.result_b.body_depth_mm:.3f} mm · {self.result_b.quality.status}."
+                f"PC {_format_optional(self.result_b.body_depth_mm)} mm · {self.result_b.quality.status}."
             )
 
     def _record_b_validation(self) -> None:
@@ -1464,6 +1628,18 @@ class MainWindow:
         try:
             position = self._float_value(self.b_position_var.get(), "Posición del carrito")
             offset = self._float_value(self.b_offset_var.get(), "Offset al plano de simetría")
+            absolute_text = self.b_validation_absolute_error_var.get().strip()
+            percentage_text = self.b_validation_percentage_error_var.get().strip()
+            maximum_absolute_error = (
+                None
+                if not absolute_text
+                else self._float_value(absolute_text, "Error absoluto máximo de validación")
+            )
+            maximum_percentage_error = (
+                None
+                if not percentage_text
+                else self._float_value(percentage_text, "Error porcentual máximo de validación")
+            )
             record = validate_known_segment_b(
                 self.result_b.image_id,
                 self.points["p1"],
@@ -1473,17 +1649,25 @@ class MainWindow:
                 self.b_rail_reference,
                 position,
                 offset,
+                replica_plane_offset_direction=self.b_offset_direction_var.get(),
                 pattern_id=pattern_id,
                 location=location,
+                maximum_absolute_error_mm=maximum_absolute_error,
+                maximum_percentage_error=maximum_percentage_error,
             )
             self.b_validation_records.append(record)
+            self.result_b = apply_physical_validation_to_result(self.result_b, record)
             paths = export_physical_validation(self.b_validation_records, Path("results"))
         except (MeasurementError, RailGeometryError, ValueError, OSError) as exc:
             self._show_error(f"No se pudo registrar la validación: {exc}")
             return
+        self.results_panel.set_results(
+            self.result_a, self.result_a_prime, self.result_b, self.result_c
+        )
         self.status_var.set(
             f"Validación B registrada: estimado {record.estimated_length_mm:.3f} mm; "
-            f"error {record.signed_error_mm:+.3f} mm. Exportada en {paths['csv']}."
+            f"error {record.signed_error_mm:+.3f} mm · {record.quality_status}. "
+            f"Exportada en {paths['csv']}."
         )
 
     def _export_results(self) -> None:
@@ -1563,7 +1747,11 @@ class MainWindow:
         if hasattr(self, "calculate_b_button"):
             b_missing = self._b_missing_inputs()
             self.calculate_b_button.configure(state="normal" if not b_missing else "disabled")
-            self.validate_b_button.configure(state="normal" if self.result_b is not None else "disabled")
+            self.validate_b_button.configure(
+                state="normal"
+                if self.result_b is not None and self.result_b.quality.status != "ERROR"
+                else "disabled"
+            )
             self.b_inputs_status_var.set(
                 "Entradas B completas: puede calcular."
                 if not b_missing

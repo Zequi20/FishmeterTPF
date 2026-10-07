@@ -117,9 +117,14 @@ class ResultsPanel(ttk.Frame):
             status = result.quality.status
             warnings = " | ".join(result.quality.warnings) or "sin advertencias"
             if result.method == "B":
+                depth_state = (
+                    "sección válida" if result.body_depth_valid else "profundidad inválida"
+                )
                 detail_lines.append(
                     f"B · réplica {result.replica_id} · rail {result.capture_rail_position_mm:.3f} mm · "
-                    f"Δz {result.delta_z_mm:+.3f} mm · estado {status} · {warnings}"
+                    f"Δrail {result.delta_z_mm:+.3f} mm · "
+                    f"desvío p3–p4 {_format(result.body_depth_section_angle_degrees)}° "
+                    f"({depth_state}) · estado {status} · {warnings}"
                 )
             elif result.method == "C":
                 detail_lines.append(

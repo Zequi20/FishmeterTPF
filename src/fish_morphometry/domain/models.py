@@ -124,17 +124,36 @@ class BMeasurementResult:
     capture_rail_position_mm: float
     delta_z_mm: float
     replica_plane_offset_mm: float
+    replica_plane_offset_direction: str
     units: str
     points_px: dict[str, Point]
     points_camera_mm: dict[str, Point3D]
+    longitudinal_axis_px: Point | None
+    longitudinal_axis_camera: Point3D | None
+    normal_axis_camera: Point3D | None
+    maximum_depth_section_angle_degrees: float | None
     total_length_mm: float | None
     body_depth_mm: float | None
+    total_length_euclidean_mm: float | None
+    body_depth_euclidean_mm: float | None
+    body_depth_section_offset_mm: float | None
+    body_depth_section_angle_degrees: float | None
+    body_depth_valid: bool | None
     calibration_profile_id: str
     calibration_profile_hash: str
+    calibration_context_hash: str
     rail_reference_id: str
+    rail_reference_hash: str
     quality: QualityReport
+    validation_record_hash: str | None = None
     exclusion_reason: str | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    @property
+    def delta_rail_mm(self) -> float:
+        """Nombre no ambiguo del desplazamiento antes llamado ``delta_z_mm``."""
+
+        return self.delta_z_mm
 
     def to_dict(self) -> dict[str, object]:
         """Convierte el resultado a una estructura JSON/YAML serializable."""
@@ -146,17 +165,42 @@ class BMeasurementResult:
             "repetition": self.repetition,
             "capture_rail_position_mm": self.capture_rail_position_mm,
             "delta_z_mm": self.delta_z_mm,
+            "delta_rail_mm": self.delta_rail_mm,
             "replica_plane_offset_mm": self.replica_plane_offset_mm,
+            "replica_plane_offset_direction": self.replica_plane_offset_direction,
             "units": self.units,
+            "points_source": "shared_annotation",
             "points_px": {name: list(point) for name, point in self.points_px.items()},
             "points_camera_mm": {
                 name: list(point) for name, point in self.points_camera_mm.items()
             },
+            "longitudinal_axis_px": (
+                None if self.longitudinal_axis_px is None else list(self.longitudinal_axis_px)
+            ),
+            "longitudinal_axis_camera": (
+                None
+                if self.longitudinal_axis_camera is None
+                else list(self.longitudinal_axis_camera)
+            ),
+            "normal_axis_camera": (
+                None if self.normal_axis_camera is None else list(self.normal_axis_camera)
+            ),
+            "maximum_depth_section_angle_degrees": (
+                self.maximum_depth_section_angle_degrees
+            ),
             "total_length_mm": self.total_length_mm,
             "body_depth_mm": self.body_depth_mm,
+            "total_length_euclidean_mm": self.total_length_euclidean_mm,
+            "body_depth_euclidean_mm": self.body_depth_euclidean_mm,
+            "body_depth_section_offset_mm": self.body_depth_section_offset_mm,
+            "body_depth_section_angle_degrees": self.body_depth_section_angle_degrees,
+            "body_depth_valid": self.body_depth_valid,
             "calibration_profile_id": self.calibration_profile_id,
             "calibration_profile_hash": self.calibration_profile_hash,
+            "calibration_context_hash": self.calibration_context_hash,
             "rail_reference_id": self.rail_reference_id,
+            "rail_reference_hash": self.rail_reference_hash,
+            "validation_record_hash": self.validation_record_hash,
             "quality": self.quality.to_dict(),
             "exclusion_reason": self.exclusion_reason,
             "metadata": dict(self.metadata),
