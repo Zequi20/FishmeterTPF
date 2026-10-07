@@ -6,6 +6,11 @@ resultado de la verificación inicial de A y A′, incluyendo el límite teóric
 la distancia euclidiana, está documentado en
 [`docs/A_A_PRIME_AUDIT.md`](docs/A_A_PRIME_AUDIT.md).
 
+La guía paso a paso para preparar y ejecutar cada experimento, explicar todos
+los campos de la interfaz, validar físicamente los resultados y conservar la
+trazabilidad está en
+[`docs/GUIA_USO_EXPERIMENTOS.md`](docs/GUIA_USO_EXPERIMENTOS.md).
+
 Aplicación de escritorio para medir réplicas de peces con los métodos A, A′, B y C. A y A′ conservan la escala métrica directa obtenida de un marcador ArUco. B usa un tablero rígido sumergido para ajustar una cámara pinhole efectiva convencional. C calibra la cámara en aire y modela explícitamente el puerto plano aire–vidrio–agua mediante dos refracciones de Snell.
 
 B y C no utilizan el tamaño, la pose ni la escala de ningún ArUco, aunque un marcador aparezca en la fotografía. B es una aproximación pinhole efectiva a través de agua y vidrio: `D_B` solo modela la distorsión del ajuste y no es una corrección física de la refracción. C usa `K_air`, `D_air`, la ley de Snell y los parámetros medidos del puerto plano; por eso ambos métodos deben validarse con una regla o barra sumergida.
