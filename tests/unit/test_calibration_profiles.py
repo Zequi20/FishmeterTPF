@@ -15,6 +15,7 @@ from fish_morphometry.calibration.air_calibration import (
 )
 from fish_morphometry.calibration.b_calibration import (
     CalibrationError,
+    CalibrationProgress,
     calibrate_b_from_images,
     load_b_calibration,
     make_b_calibration_profile,
@@ -218,6 +219,16 @@ def test_air_calibration_rejects_high_error_view_and_keeps_diverse_set(monkeypat
     assert profile.views_rejected == 1
     assert profile.view_reports[0].accepted is False
     assert profile.source_metadata["tilt_span_degrees"] >= 10
+    assert all(
+        report.detector_method in {
+            "SB",
+            "SB_NORMALIZE",
+            "SB_NORMALIZE_EXHAUSTIVE",
+            "CLASSIC_ADAPTIVE_NORMALIZE",
+        }
+        for report in profile.view_reports
+        if report.accepted
+    )
 
 
 def test_b_calibration_rejects_high_error_view_and_keeps_diverse_set(monkeypatch):
@@ -269,6 +280,7 @@ def test_b_calibration_rejects_high_error_view_and_keeps_diverse_set(monkeypatch
     monkeypatch.setattr(
         b_calibration.cv2, "calibrateCameraExtended", fake_calibrate
     )
+    progress: list[CalibrationProgress] = []
     profile = calibrate_b_from_images(
         [np.zeros((200, 200), dtype=np.uint8) for _ in centers],
         inner_corners=(3, 3),
@@ -279,6 +291,7 @@ def test_b_calibration_rejects_high_error_view_and_keeps_diverse_set(monkeypatch
         maximum_per_view_error_px=1.5,
         minimum_center_span_fraction=0.2,
         minimum_tilt_span_degrees=10,
+        progress_callback=progress.append,
     )
     assert calibration_calls == 2
     assert profile.views_received == 16
@@ -287,3 +300,13 @@ def test_b_calibration_rejects_high_error_view_and_keeps_diverse_set(monkeypatch
     assert profile.view_reports[0].accepted is False
     assert "reproyección" in profile.view_reports[0].rejection_reason
     assert profile.source_metadata["tilt_span_degrees"] >= 10
+    assert all(report.detector_method is not None for report in profile.view_reports if report.accepted)
+    assert progress[0].stage == "start"
+    assert progress[-1].stage == "complete"
+    assert sum(event.stage == "image_accepted" for event in progress) == 16
+    assert sum(event.stage == "fit_result" for event in progress) == 2
+    assert sum(event.stage == "outlier_rejected" for event in progress) == 1
+    assert sum(event.stage == "view_metrics" for event in progress) == 15
+    rejected_event = next(event for event in progress if event.stage == "outlier_rejected")
+    assert rejected_event.image_id == "view_001"
+    assert rejected_event.level == "warning"

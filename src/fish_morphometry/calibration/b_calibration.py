@@ -12,11 +12,16 @@ import hashlib
 import json
 import math
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Literal, Sequence
 
 import cv2
 import numpy as np
 import yaml
+
+from ..vision.chessboard_detector import (
+    ChessboardInputError,
+    detect_chessboard_corners,
+)
 
 
 SCHEMA = "fish_morphometry.b_calibration.v1"
@@ -40,6 +45,23 @@ class CalibrationError(ValueError):
 
 
 @dataclass(frozen=True)
+class CalibrationProgress:
+    """Evento de diagnóstico emitido durante una calibración B.
+
+    El callback que recibe estos eventos puede ejecutarse desde un hilo de
+    trabajo. Por ello, una interfaz gráfica debe reenviarlos al hilo principal
+    antes de modificar widgets.
+    """
+
+    stage: str
+    message: str
+    level: Literal["info", "success", "warning", "error"] = "info"
+    current: int | None = None
+    total: int | None = None
+    image_id: str | None = None
+
+
+@dataclass(frozen=True)
 class CalibrationViewReport:
     """Resultado auditable del procesamiento de una vista del tablero."""
 
@@ -50,6 +72,9 @@ class CalibrationViewReport:
     board_center_normalized: tuple[float, float] | None = None
     board_area_fraction: float | None = None
     tilt_degrees: float | None = None
+    detector_method: str | None = None
+    detected_corner_count: int | None = None
+    detection_time_ms: float | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -64,6 +89,9 @@ class CalibrationViewReport:
             ),
             "board_area_fraction": self.board_area_fraction,
             "tilt_degrees": self.tilt_degrees,
+            "detector_method": self.detector_method,
+            "detected_corner_count": self.detected_corner_count,
+            "detection_time_ms": self.detection_time_ms,
         }
 
 
@@ -317,6 +345,7 @@ def calibrate_b_from_images(
     maximum_per_view_error_px: float = 1.5,
     minimum_center_span_fraction: float = 0.20,
     minimum_tilt_span_degrees: float = 10.0,
+    progress_callback: Callable[[CalibrationProgress], None] | None = None,
 ) -> BCalibrationProfile:
     """Detecta un damero sumergido y ajusta ``K_B,D_B`` con OpenCV.
 
@@ -324,6 +353,27 @@ def calibrate_b_from_images(
     (ancho, alto). Cada rechazo queda en ``CalibrationError.reports`` si no se
     alcanza el mínimo de vistas utilizables.
     """
+
+    def emit(
+        stage: str,
+        message: str,
+        *,
+        level: Literal["info", "success", "warning", "error"] = "info",
+        current: int | None = None,
+        total: int | None = None,
+        image_id: str | None = None,
+    ) -> None:
+        if progress_callback is not None:
+            progress_callback(
+                CalibrationProgress(
+                    stage=stage,
+                    message=message,
+                    level=level,
+                    current=current,
+                    total=total,
+                    image_id=image_id,
+                )
+            )
 
     columns, rows = (int(inner_corners[0]), int(inner_corners[1]))
     square = _finite(square_size_mm, "El tamaño físico del cuadro")
@@ -351,59 +401,153 @@ def calibrate_b_from_images(
     if expected_resolution is not None and any(value <= 0 for value in expected_resolution):
         raise CalibrationError("La resolución configurada debe ser positiva.")
 
+    image_sources = list(images)
+    total_images = len(image_sources)
+    emit(
+        "start",
+        (
+            f"Inicio con {total_images} imágenes; patrón {columns}×{rows} esquinas internas, "
+            f"cuadro {square:g} mm y z_ref={rail_position:g} mm."
+        ),
+        total=total_images,
+    )
+
     object_template = _object_points((columns, rows), square)
     object_points: list[np.ndarray] = []
     image_points: list[np.ndarray] = []
     reports: list[CalibrationViewReport] = []
     accepted_report_indices: list[int] = []
-    detection_flags = cv2.CALIB_CB_ADAPTIVE_THRESH | cv2.CALIB_CB_NORMALIZE_IMAGE
-    termination = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 40, 0.001)
-
-    for index, source in enumerate(images):
+    for index, source in enumerate(image_sources):
+        current = index + 1
         image_id, image = _read_image(source, index)
         if image is None or image.ndim < 2 or image.size == 0:
-            reports.append(CalibrationViewReport(image_id, False, "imagen ilegible"))
+            reason = "imagen ilegible"
+            reports.append(CalibrationViewReport(image_id, False, reason))
+            emit(
+                "image_rejected",
+                reason,
+                level="warning",
+                current=current,
+                total=total_images,
+                image_id=image_id,
+            )
             continue
         height, width = image.shape[:2]
         actual_resolution = (width, height)
         if expected_resolution is None:
             expected_resolution = actual_resolution
         if actual_resolution != expected_resolution:
+            reason = (
+                f"resolución incompatible: {width}×{height}; esperada "
+                f"{expected_resolution[0]}×{expected_resolution[1]}"
+            )
             reports.append(
                 CalibrationViewReport(
                     image_id,
                     False,
-                    f"resolución incompatible: {width}×{height}; esperada "
-                    f"{expected_resolution[0]}×{expected_resolution[1]}",
+                    reason,
                 )
             )
-            continue
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
-        try:
-            found, corners = cv2.findChessboardCorners(
-                gray, (columns, rows), flags=detection_flags
-            )
-        except cv2.error as exc:
-            reports.append(CalibrationViewReport(image_id, False, f"error OpenCV: {exc}"))
-            continue
-        if not found or corners is None or len(corners) != columns * rows:
-            reports.append(CalibrationViewReport(image_id, False, "tablero no detectado completo"))
-            continue
-        try:
-            refined = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), termination)
-        except cv2.error as exc:
-            reports.append(
-                CalibrationViewReport(image_id, False, f"falló el refinamiento subpíxel: {exc}")
+            emit(
+                "image_rejected",
+                reason,
+                level="warning",
+                current=current,
+                total=total_images,
+                image_id=image_id,
             )
             continue
+        try:
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
+        except cv2.error as exc:
+            reason = f"imagen ilegible: no se pudo convertir a grises ({exc})"
+            reports.append(CalibrationViewReport(image_id, False, reason))
+            emit(
+                "image_rejected",
+                reason,
+                level="error",
+                current=current,
+                total=total_images,
+                image_id=image_id,
+            )
+            continue
+        try:
+            detection = detect_chessboard_corners(gray, (columns, rows))
+        except ChessboardInputError as exc:
+            reason = f"imagen inválida para detección: {exc}"
+            reports.append(CalibrationViewReport(image_id, False, reason))
+            emit(
+                "image_rejected",
+                reason,
+                level="error",
+                current=current,
+                total=total_images,
+                image_id=image_id,
+            )
+            continue
+        if not detection.found:
+            reason = (
+                f"tablero no detectado completo; se esperaban {columns * rows} esquinas internas; "
+                f"{detection.diagnostic_summary}"
+            )
+            reports.append(CalibrationViewReport(image_id, False, reason))
+            emit(
+                "image_rejected",
+                reason,
+                level="warning",
+                current=current,
+                total=total_images,
+                image_id=image_id,
+            )
+            continue
+        assert detection.corners is not None and detection.method is not None
         object_points.append(object_template.copy())
-        image_points.append(refined.astype(np.float32))
+        image_points.append(detection.corners.astype(np.float32))
         accepted_report_indices.append(len(reports))
-        reports.append(CalibrationViewReport(image_id, True))
+        reports.append(
+            CalibrationViewReport(
+                image_id,
+                True,
+                detector_method=detection.method,
+                detected_corner_count=detection.corner_count,
+                detection_time_ms=detection.elapsed_ms,
+            )
+        )
+        emit(
+            "image_accepted",
+            (
+                f"OK {detection.corner_count}/{columns * rows} esquinas "
+                f"detectadas mediante {detection.method} ({detection.elapsed_ms:.1f} ms); "
+                f"resolución {width}×{height}"
+            ),
+            level="success",
+            current=current,
+            total=total_images,
+            image_id=image_id,
+        )
 
     if expected_resolution is None:
+        emit("failed", "No se recibió ninguna imagen legible.", level="error")
         raise CalibrationError("No se recibió ninguna imagen legible.", reports=reports)
+    emit(
+        "detection_summary",
+        (
+            f"Detección terminada: {len(object_points)} utilizables y "
+            f"{len(reports) - len(object_points)} rechazadas de {len(reports)}."
+        ),
+        level="success" if len(object_points) >= int(minimum_usable_views) else "warning",
+        current=total_images,
+        total=total_images,
+    )
     if len(object_points) < int(minimum_usable_views):
+        emit(
+            "failed",
+            (
+                f"Se requieren al menos {minimum_usable_views} vistas utilizables; "
+                f"solo se aceptaron {len(object_points)}."
+            ),
+            level="error",
+        )
         raise CalibrationError(
             f"B requiere al menos {minimum_usable_views} vistas utilizables; "
             f"se aceptaron {len(object_points)} de {len(reports)}.",
@@ -451,7 +595,16 @@ def calibrate_b_from_images(
                 f"OpenCV no pudo calibrar las vistas aceptadas: {exc}", reports=reports
             ) from exc
 
+    calibration_iteration = 0
     while True:
+        calibration_iteration += 1
+        emit(
+            "fit_start",
+            (
+                f"Ajuste OpenCV {calibration_iteration} con "
+                f"{len(object_points)} vistas utilizables."
+            ),
+        )
         rms, camera_matrix, distortion, rvecs, _tvecs, per_view_errors = run_calibration()
         if len(per_view_errors) != len(object_points):
             raise CalibrationError(
@@ -463,6 +616,17 @@ def calibrate_b_from_images(
             for index, error in enumerate(per_view_errors)
             if not math.isfinite(float(error)) or error > maximum_view_error
         ]
+        finite_errors = per_view_errors[np.isfinite(per_view_errors)]
+        maximum_error = float(np.max(finite_errors)) if len(finite_errors) else math.inf
+        emit(
+            "fit_result",
+            (
+                f"Ajuste {calibration_iteration}: RMS={rms:.4f} px; "
+                f"error máximo por vista={maximum_error:.4f} px; "
+                f"umbral={maximum_view_error:.4f} px."
+            ),
+            level="success" if not outliers else "warning",
+        )
         if not outliers:
             break
         outlier_set = set(outliers)
@@ -479,6 +643,20 @@ def calibrate_b_from_images(
                     ),
                     reprojection_error_px=error,
                 )
+                emit(
+                    "outlier_rejected",
+                    (
+                        f"error de reproyección {error:.3f} px > "
+                        f"{maximum_view_error:.3f} px"
+                    ),
+                    level="warning",
+                    image_id=reports[report_index].image_id,
+                )
+            emit(
+                "failed",
+                "Eliminar las vistas con alto error dejaría menos vistas que el mínimo.",
+                level="error",
+            )
             raise CalibrationError(
                 "La eliminación de vistas con alto error deja menos vistas que el mínimo requerido.",
                 reports=reports,
@@ -494,6 +672,15 @@ def calibrate_b_from_images(
                     f"{maximum_view_error:.3f} px"
                 ),
                 reprojection_error_px=error,
+            )
+            emit(
+                "outlier_rejected",
+                (
+                    f"error de reproyección {error:.3f} px > "
+                    f"{maximum_view_error:.3f} px; se repetirá el ajuste sin esta vista"
+                ),
+                level="warning",
+                image_id=reports[report_index].image_id,
             )
         object_points[:] = [value for i, value in enumerate(object_points) if i not in outlier_set]
         image_points[:] = [value for i, value in enumerate(image_points) if i not in outlier_set]
@@ -522,6 +709,15 @@ def calibrate_b_from_images(
             board_area_fraction=area_fraction,
             tilt_degrees=tilt,
         )
+        emit(
+            "view_metrics",
+            (
+                f"error={float(per_view_errors[local_index]):.4f} px; "
+                f"centro=({center[0]:.3f}, {center[1]:.3f}); "
+                f"área={area_fraction:.4f}; inclinación={tilt:.2f}°"
+            ),
+            image_id=reports[report_index].image_id,
+        )
     center_span_x = max(value[0] for value in centers) - min(value[0] for value in centers)
     center_span_y = max(value[1] for value in centers) - min(value[1] for value in centers)
     tilt_span = max(
@@ -531,19 +727,44 @@ def calibrate_b_from_images(
         for index, first in enumerate(normals)
         for second in normals[index:]
     )
+    emit(
+        "diversity",
+        (
+            f"Cobertura de centros: x={center_span_x:.3f}, y={center_span_y:.3f} "
+            f"(mínimo {minimum_center_span:.3f}); diversidad angular={tilt_span:.3f}° "
+            f"(mínimo {minimum_tilt_span:.3f}°)."
+        ),
+        level=(
+            "success"
+            if center_span_x >= minimum_center_span
+            and center_span_y >= minimum_center_span
+            and tilt_span >= minimum_tilt_span
+            else "warning"
+        ),
+    )
     if center_span_x < minimum_center_span or center_span_y < minimum_center_span:
+        emit(
+            "failed",
+            "Las vistas no cubren suficiente diversidad espacial del encuadre.",
+            level="error",
+        )
         raise CalibrationError(
             "Las vistas no cubren suficiente diversidad espacial de centros del tablero: "
             f"span=({center_span_x:.3f}, {center_span_y:.3f}), mínimo={minimum_center_span:.3f}.",
             reports=reports,
         )
     if tilt_span < minimum_tilt_span:
+        emit(
+            "failed",
+            "Las vistas no cubren suficiente diversidad de inclinación.",
+            level="error",
+        )
         raise CalibrationError(
             "Las vistas no cubren suficiente diversidad de inclinación: "
             f"span={tilt_span:.3f}°, mínimo={minimum_tilt_span:.3f}°.",
             reports=reports,
         )
-    return make_b_calibration_profile(
+    profile = make_b_calibration_profile(
         profile_id=profile_id,
         model="OPENCV",
         camera_matrix=camera_matrix,
@@ -567,6 +788,17 @@ def calibrate_b_from_images(
             "tilt_span_definition": "maximum_pairwise_board_normal_angle",
         },
     )
+    emit(
+        "complete",
+        (
+            f"Calibración terminada: {profile.views_accepted}/{profile.views_received} "
+            f"vistas aceptadas; RMS={profile.rms_px:.4f} px."
+        ),
+        level="success",
+        current=total_images,
+        total=total_images,
+    )
+    return profile
 
 
 def save_b_calibration(profile: BCalibrationProfile, path: str | Path) -> Path:
@@ -626,6 +858,17 @@ def load_b_calibration(path: str | Path) -> BCalibrationProfile:
                     if item.get("tilt_degrees") is None
                     else float(item["tilt_degrees"])
                 ),
+                detector_method=None if item.get("detector_method") is None else str(item["detector_method"]),
+                detected_corner_count=(
+                    None
+                    if item.get("detected_corner_count") is None
+                    else int(item["detected_corner_count"])
+                ),
+                detection_time_ms=(
+                    None
+                    if item.get("detection_time_ms") is None
+                    else float(item["detection_time_ms"])
+                ),
             )
             for item in views.get("reports", [])
         )
@@ -679,6 +922,7 @@ save_calibration_b = save_b_calibration
 __all__ = [
     "BCalibrationProfile",
     "CalibrationError",
+    "CalibrationProgress",
     "CalibrationViewReport",
     "SCHEMA",
     "SUPPORTED_DISTORTION_LENGTHS",

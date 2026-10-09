@@ -302,6 +302,11 @@ guarda las vistas recibidas, aceptadas y rechazadas, sus motivos, RMS, errores,
 centros, áreas e inclinaciones. Un RMS bajo indica consistencia del ajuste, no
 exactitud física.
 
+La detección intenta primero `findChessboardCornersSB` (flags 0, normalización y
+normalización exhaustiva) y después el detector clásico con umbral adaptativo y
+normalización. Solo el último aplica `cornerSubPix`; el log identifica el método
+que aceptó cada fotografía y su tiempo aproximado.
+
 Modelos Calibmar admitidos: `SIMPLE_PINHOLE`, `PINHOLE`, `SIMPLE_RADIAL`,
 `RADIAL`, `OPENCV` y `FULL_OPENCV`. Un perfil `FLATPORT` corresponde a C y se
 rechaza en B.
@@ -314,8 +319,12 @@ rechaza en B.
    inclinación. Cubra centro, laterales, parte superior e inferior.
 4. Evite desenfoque, reflejos, tablero doblado o esquinas fuera de la imagen.
 5. Complete los campos y pulse **Crear con tablero…**.
-6. Seleccione todas las vistas. El programa informa las rechazadas si no logra
-   formar un conjunto válido.
+6. Seleccione todas las vistas. La calibración se ejecuta en segundo plano y la
+   aplicación permanece utilizable. Revise **Log de calibración B** mientras se
+   procesan: cada archivo queda marcado como aceptado o rechazado con su causa
+   (imagen ilegible, resolución incompatible, tablero incompleto, fallo de
+   refinamiento o error de reproyección). El mismo panel muestra las iteraciones
+   de OpenCV, RMS, cobertura del encuadre y diversidad angular.
 7. Guarde el perfil, por ejemplo `calibration_B.yaml`.
 8. Registre el hash mostrado; identifica intrínsecos y resolución.
 
@@ -342,6 +351,11 @@ Para crearla:
 4. Cuando se solicite, escriba la posición física de cada foto en mm. La primera
    propone `z_ref`, pero puede corregirse.
 5. Guarde `rail_reference_B.yaml`.
+
+Con un tablero cuadrado, la textura no determina por sí sola el origen ni la
+orientación de sus coordenadas. El programa advierte esta ambigüedad y no hace
+inversiones automáticas; compruebe la orientación física o utilice una marca
+asimétrica si la correspondencia entre posiciones es esencial.
 
 No edite la dirección estimada a mano. Si el ajuste supera cualquiera de los
 umbrales, revise posiciones, rigidez, detección o montaje.
@@ -444,6 +458,9 @@ Procedimiento:
 4. Complete esquinas, tamaño y unidad.
 5. Pulse **Crear con tablero…**, seleccione las vistas y guarde
    `calibration_C_air.yaml`.
+
+La calibración en aire utiliza exactamente la misma secuencia de detección que
+B, incluida la información del método y del tiempo de cada detección.
 
 Un RMS menor que el objetivo del protocolo no valida por sí solo el método C.
 

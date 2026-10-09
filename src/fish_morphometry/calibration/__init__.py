@@ -3,6 +3,7 @@
 from .b_calibration import (
     BCalibrationProfile,
     CalibrationError,
+    CalibrationProgress,
     CalibrationViewReport,
     calibrate_b,
     calibrate_b_from_images,
@@ -32,6 +33,7 @@ __all__ = [
     "CalibmarFlatPortError",
     "CalibmarFlatPortProfile",
     "CalibrationError",
+    "CalibrationProgress",
     "CalibrationViewReport",
     "calibrate_b",
     "calibrate_b_from_images",

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 import math
 from pathlib import Path
+import queue
+import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
@@ -23,6 +26,7 @@ from ..calibration.calibmar_flatport import CalibmarFlatPortError, import_calibm
 from ..calibration.b_calibration import (
     BCalibrationProfile,
     CalibrationError,
+    CalibrationProgress,
     calibrate_b_from_images,
     load_b_calibration,
     save_b_calibration,
@@ -176,6 +180,8 @@ class MainWindow:
         self.b_rail_perpendicular_var = tk.BooleanVar(value=False)
         self.b_parallel_planes_var = tk.BooleanVar(value=False)
         self.b_profile_status_var = tk.StringVar(value="Falta calibración B.")
+        self.b_calibration_progress_var = tk.DoubleVar(value=0.0)
+        self.b_calibration_progress_text_var = tk.StringVar(value="Calibración inactiva.")
         self.b_reference_status_var = tk.StringVar(value="Falta referencia geométrica cámara–rail.")
         self.b_inputs_status_var = tk.StringVar(value="Faltan posición del carrito, réplica y offset.")
         self.status_var = tk.StringVar(value="Cargue una imagen para comenzar.")
@@ -183,6 +189,8 @@ class MainWindow:
         self.points_status_var = tk.StringVar(value="No hay puntos anatómicos cargados.")
         self.depth_candidate_var = tk.StringVar(value="")
         self.depth_candidate_status_var = tk.StringVar(value="Sin candidatas guardadas.")
+        self._b_calibration_active = False
+        self._b_calibration_events: queue.Queue[tuple[str, object]] = queue.Queue()
 
         self._build()
         self.axis_angle_var.trace_add("write", self._on_axis_angle_changed)
@@ -575,9 +583,12 @@ class MainWindow:
         ttk.Button(
             card, text="Cargar/importar perfil B", style="Action.TButton", command=self._load_b_profile
         ).grid(row=3, column=0, columnspan=2, sticky="ew", pady=(6, 0), padx=(0, 4))
-        ttk.Button(
+        self.create_b_profile_button = ttk.Button(
             card, text="Crear con tablero…", style="Action.TButton", command=self._create_b_profile
-        ).grid(row=3, column=2, columnspan=2, sticky="ew", pady=(6, 0), padx=(4, 0))
+        )
+        self.create_b_profile_button.grid(
+            row=3, column=2, columnspan=2, sticky="ew", pady=(6, 0), padx=(4, 0)
+        )
         ttk.Label(card, textvariable=self.b_profile_status_var, style="CardMuted.TLabel", wraplength=430).grid(
             row=4, column=0, columnspan=4, sticky="w", pady=(5, 0)
         )
@@ -742,6 +753,59 @@ class MainWindow:
             card, text="Registrar validación física…", style="Action.TButton", command=self._record_b_validation
         )
         self.validate_b_button.grid(row=23, column=2, columnspan=2, sticky="ew", pady=(7, 0), padx=(4, 0))
+
+        ttk.Separator(card, orient="horizontal").grid(
+            row=24, column=0, columnspan=4, sticky="ew", pady=(10, 8)
+        )
+        ttk.Label(card, text="Log de calibración B", style="CardTitle.TLabel").grid(
+            row=25, column=0, columnspan=2, sticky="w"
+        )
+        ttk.Button(
+            card,
+            text="Limpiar log",
+            command=self._clear_b_calibration_log,
+        ).grid(row=25, column=2, columnspan=2, sticky="e")
+        progress_frame = ttk.Frame(card, style="Card.TFrame")
+        progress_frame.grid(row=26, column=0, columnspan=4, sticky="ew", pady=(6, 0))
+        progress_frame.columnconfigure(0, weight=1)
+        ttk.Progressbar(
+            progress_frame,
+            variable=self.b_calibration_progress_var,
+            maximum=100.0,
+            mode="determinate",
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        ttk.Label(
+            progress_frame,
+            textvariable=self.b_calibration_progress_text_var,
+            style="CardMuted.TLabel",
+        ).grid(row=0, column=1, sticky="e")
+        log_frame = ttk.Frame(card, style="Card.TFrame")
+        log_frame.grid(row=27, column=0, columnspan=4, sticky="nsew", pady=(6, 0))
+        log_frame.columnconfigure(0, weight=1)
+        log_frame.rowconfigure(0, weight=1)
+        self.b_calibration_log = tk.Text(
+            log_frame,
+            height=11,
+            wrap="word",
+            state="disabled",
+            background="#111827",
+            foreground="#d1d5db",
+            insertbackground="#f9fafb",
+            borderwidth=0,
+            padx=8,
+            pady=7,
+            font=("TkFixedFont", 9),
+        )
+        self.b_calibration_log.grid(row=0, column=0, sticky="nsew")
+        log_scrollbar = ttk.Scrollbar(
+            log_frame, orient="vertical", command=self.b_calibration_log.yview
+        )
+        log_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.b_calibration_log.configure(yscrollcommand=log_scrollbar.set)
+        self.b_calibration_log.tag_configure("success", foreground="#86efac")
+        self.b_calibration_log.tag_configure("warning", foreground="#fde68a")
+        self.b_calibration_log.tag_configure("error", foreground="#fca5a5")
+        self.b_calibration_log.tag_configure("info", foreground="#d1d5db")
         for variable in (
             self.b_replica_var,
             self.b_repetition_var,
@@ -938,6 +1002,9 @@ class MainWindow:
         self._refresh_calculate_states()
 
     def _create_b_profile(self) -> None:
+        if self._b_calibration_active:
+            self.status_var.set("Ya hay una calibración B en curso.")
+            return
         try:
             calibration_position = self._float_value(
                 self.b_calibration_position_var.get(), "Posición de calibración B"
@@ -966,27 +1033,132 @@ class MainWindow:
         )
         if not paths:
             return
+
+        self._clear_b_calibration_log()
+        self._b_calibration_events = queue.Queue()
+        events = self._b_calibration_events
+        self._b_calibration_active = True
+        self.create_b_profile_button.configure(state="disabled")
+        self.b_calibration_progress_var.set(0.0)
+        self.b_calibration_progress_text_var.set(f"0/{len(paths)} imágenes")
+        self.b_profile_status_var.set("Calibración B en curso; consulte el log.")
+        self.status_var.set("Calibración B en segundo plano… la interfaz sigue disponible.")
+        settings = {
+            "inner_corners": (columns, rows),
+            "square_size_mm": square,
+            "resolution": None,
+            "calibration_rail_position_mm": calibration_position,
+            "maximum_per_view_error_px": maximum_view_error,
+            "minimum_center_span_fraction": minimum_center_span,
+            "minimum_tilt_span_degrees": minimum_tilt_span,
+        }
+        worker = threading.Thread(
+            target=self._run_b_calibration_worker,
+            args=(tuple(paths), settings, events),
+            name="fishmeter-calibration-b",
+            daemon=True,
+        )
+        worker.start()
+        self.root.after(50, lambda: self._poll_b_calibration_events(events))
+
+    def _run_b_calibration_worker(
+        self,
+        paths: tuple[str, ...],
+        settings: dict[str, object],
+        events: queue.Queue[tuple[str, object]],
+    ) -> None:
+        """Ejecuta OpenCV fuera del hilo de Tk y solo publica datos en la cola."""
+
         try:
             profile = calibrate_b_from_images(
                 paths,
-                inner_corners=(columns, rows),
-                square_size_mm=square,
-                resolution=None,
-                calibration_rail_position_mm=calibration_position,
-                maximum_per_view_error_px=maximum_view_error,
-                minimum_center_span_fraction=minimum_center_span,
-                minimum_tilt_span_degrees=minimum_tilt_span,
+                **settings,
+                progress_callback=lambda event: events.put(("progress", event)),
             )
         except CalibrationError as exc:
-            rejected = ""
-            if exc.reports:
-                rejected = "\n" + "\n".join(
-                    f"- {report.image_id}: {report.rejection_reason}"
-                    for report in exc.reports
-                    if not report.accepted
-                )
-            self._show_error(f"No se pudo calibrar B: {exc}{rejected}")
+            events.put(("calibration_error", exc))
+        except Exception as exc:  # El hilo debe devolver errores inesperados a la UI.
+            events.put(("unexpected_error", exc))
+        else:
+            events.put(("success", profile))
+
+    def _poll_b_calibration_events(
+        self, events: queue.Queue[tuple[str, object]]
+    ) -> None:
+        """Consume en el hilo principal los eventos producidos por OpenCV."""
+
+        if events is not self._b_calibration_events:
             return
+        terminal: tuple[str, object] | None = None
+        while True:
+            try:
+                event_type, payload = events.get_nowait()
+            except queue.Empty:
+                break
+            if event_type == "progress":
+                self._handle_b_calibration_progress(payload)
+            else:
+                terminal = (event_type, payload)
+
+        if terminal is None:
+            self.root.after(75, lambda: self._poll_b_calibration_events(events))
+            return
+
+        self._b_calibration_active = False
+        self.create_b_profile_button.configure(state="normal")
+        event_type, payload = terminal
+        if event_type == "success":
+            self._finish_b_profile_creation(payload)
+        elif event_type == "calibration_error":
+            self._finish_b_calibration_error(payload)
+        else:
+            self._append_b_calibration_log(
+                "error", f"Error interno inesperado: {type(payload).__name__}: {payload}"
+            )
+            self.b_profile_status_var.set("La calibración B falló por un error interno.")
+            self.b_calibration_progress_text_var.set("Error")
+            self._show_error(f"Error interno durante la calibración B: {payload}")
+
+    def _handle_b_calibration_progress(self, payload: object) -> None:
+        if not isinstance(payload, CalibrationProgress):
+            return
+        if payload.stage == "complete":
+            self.b_calibration_progress_var.set(100.0)
+            self.b_calibration_progress_text_var.set("Completada")
+        elif payload.current is not None and payload.total:
+            self.b_calibration_progress_var.set(100.0 * payload.current / payload.total)
+            self.b_calibration_progress_text_var.set(
+                f"{payload.current}/{payload.total} imágenes"
+            )
+        elif payload.stage.startswith("fit"):
+            self.b_calibration_progress_text_var.set("Ajustando cámara…")
+        elif payload.stage == "diversity":
+            self.b_calibration_progress_text_var.set("Verificando diversidad…")
+
+        image_prefix = f"[{payload.image_id}] " if payload.image_id else ""
+        self._append_b_calibration_log(
+            payload.level, f"{image_prefix}{payload.message}"
+        )
+
+    def _finish_b_calibration_error(self, payload: object) -> None:
+        if not isinstance(payload, CalibrationError):
+            return
+        self._append_b_calibration_log("error", f"Calibración detenida: {payload}")
+        self.b_profile_status_var.set("No se pudo crear la calibración B; revise el log.")
+        self.b_calibration_progress_text_var.set("Falló")
+        rejected = ""
+        if payload.reports:
+            rejected = "\n" + "\n".join(
+                f"- {report.image_id}: {report.rejection_reason}"
+                for report in payload.reports
+                if not report.accepted
+            )
+        self._show_error(f"No se pudo calibrar B: {payload}{rejected}")
+
+    def _finish_b_profile_creation(self, payload: object) -> None:
+        if not isinstance(payload, BCalibrationProfile):
+            return
+        profile = payload
         path = filedialog.asksaveasfilename(
             title="Guardar perfil B",
             initialfile="calibration_B.yaml",
@@ -994,10 +1166,19 @@ class MainWindow:
             filetypes=(("YAML", "*.yaml"), ("Todos", "*.*")),
         )
         if not path:
+            self._append_b_calibration_log(
+                "warning", "Perfil calculado, pero no guardado ni aplicado a la sesión."
+            )
+            self.b_profile_status_var.set("Perfil B calculado pero no guardado.")
+            self.status_var.set("La calibración terminó; se canceló el guardado del perfil B.")
             return
         try:
             save_b_calibration(profile, path)
         except OSError as exc:
+            self._append_b_calibration_log("error", f"No se pudo guardar el perfil: {exc}")
+            self.b_profile_status_var.set("Perfil B calculado, pero no se pudo guardar.")
+            self.b_calibration_progress_text_var.set("Guardado fallido")
+            self.status_var.set("La calibración B terminó, pero falló el guardado del perfil.")
             self._show_error(f"No se pudo guardar el perfil B: {exc}")
             return
         self.b_profile = profile
@@ -1010,7 +1191,35 @@ class MainWindow:
         self.b_rail_reference = None
         self.b_reference_status_var.set("Falta referencia geométrica cámara–rail para este perfil.")
         self.status_var.set(f"Perfil B guardado: {Path(path).name}.")
+        self._append_b_calibration_log(
+            "success", f"Perfil guardado en {path}; hash {profile.profile_hash[:12]}."
+        )
         self._refresh_calculate_states()
+
+    def _clear_b_calibration_log(self) -> None:
+        log = getattr(self, "b_calibration_log", None)
+        if log is None:
+            return
+        log.configure(state="normal")
+        log.delete("1.0", "end")
+        log.configure(state="disabled")
+
+    def _append_b_calibration_log(self, level: str, message: str) -> None:
+        log = getattr(self, "b_calibration_log", None)
+        if log is None:
+            return
+        labels = {
+            "info": "INFO",
+            "success": "OK",
+            "warning": "AVISO",
+            "error": "ERROR",
+        }
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        tag = level if level in labels else "info"
+        log.configure(state="normal")
+        log.insert("end", f"{timestamp} {labels.get(tag, 'INFO')}  {message}\n", tag)
+        log.see("end")
+        log.configure(state="disabled")
 
     def _load_b_reference(self) -> None:
         path = filedialog.askopenfilename(

@@ -9,6 +9,7 @@ import json
 import math
 from pathlib import Path
 from typing import Sequence
+import warnings
 
 import cv2
 import numpy as np
@@ -17,6 +18,7 @@ import yaml
 from ..calibration.b_calibration import BCalibrationProfile
 from ..domain.models import Point, Point3D
 from ..measurements.quality import MeasurementError
+from ..vision.chessboard_detector import ChessboardInputError, detect_chessboard_corners
 
 
 SCHEMA = "fish_morphometry.rail_plane_reference.v1"
@@ -493,20 +495,18 @@ def estimate_rail_reference_from_image(
     if not isinstance(inner_corners_raw, (tuple, list)) or len(inner_corners_raw) != 2:
         raise RailGeometryError("Debe indicar inner_corners=(columnas, filas).")
     inner_corners = (int(inner_corners_raw[0]), int(inner_corners_raw[1]))
-    gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY) if image_bgr.ndim == 3 else image_bgr
+    _warn_square_board_orientation_ambiguity(inner_corners)
     try:
-        found, corners = cv2.findChessboardCorners(
-            gray,
-            inner_corners,
-            flags=cv2.CALIB_CB_ADAPTIVE_THRESH | cv2.CALIB_CB_NORMALIZE_IMAGE,
+        gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY) if image_bgr.ndim == 3 else image_bgr
+        detection = detect_chessboard_corners(gray, inner_corners)
+    except (cv2.error, ChessboardInputError) as exc:
+        raise RailGeometryError(f"La imagen de referencia no es válida para detectar el damero: {exc}") from exc
+    if not detection.found or detection.corners is None:
+        raise RailGeometryError(
+            "No se detectó completo el tablero en la fotografía de referencia; "
+            f"{detection.diagnostic_summary}"
         )
-    except cv2.error as exc:
-        raise RailGeometryError(f"OpenCV no pudo detectar el tablero de referencia: {exc}") from exc
-    if not found or corners is None:
-        raise RailGeometryError("No se detectó completo el tablero en la fotografía de referencia.")
-    termination = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 40, 0.001)
-    refined = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), termination)
-    return estimate_rail_reference_from_points(refined, profile, **kwargs)  # type: ignore[arg-type]
+    return estimate_rail_reference_from_points(detection.corners, profile, **kwargs)  # type: ignore[arg-type]
 
 
 def estimate_rail_reference_from_images(
@@ -520,7 +520,7 @@ def estimate_rail_reference_from_images(
     if not isinstance(inner_corners_raw, (tuple, list)) or len(inner_corners_raw) != 2:
         raise RailGeometryError("Debe indicar inner_corners=(columnas, filas).")
     inner_corners = (int(inner_corners_raw[0]), int(inner_corners_raw[1]))
-    termination = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 40, 0.001)
+    _warn_square_board_orientation_ambiguity(inner_corners)
     point_observations: list[tuple[float, np.ndarray, str]] = []
     for position, image_bgr, image_id in observations:
         if image_bgr is None or not isinstance(image_bgr, np.ndarray) or image_bgr.ndim < 2:
@@ -531,24 +531,36 @@ def estimate_rail_reference_from_images(
                 f"Resolución incompatible en {image_id}: {width}×{height}; perfil B "
                 f"{profile.resolution[0]}×{profile.resolution[1]}."
             )
-        gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY) if image_bgr.ndim == 3 else image_bgr
         try:
-            found, corners = cv2.findChessboardCorners(
-                gray,
-                inner_corners,
-                flags=cv2.CALIB_CB_ADAPTIVE_THRESH | cv2.CALIB_CB_NORMALIZE_IMAGE,
-            )
-        except cv2.error as exc:
+            gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY) if image_bgr.ndim == 3 else image_bgr
+            detection = detect_chessboard_corners(gray, inner_corners)
+        except (cv2.error, ChessboardInputError) as exc:
             raise RailGeometryError(
-                f"OpenCV no pudo detectar el tablero en {image_id}: {exc}"
+                f"La imagen de referencia {image_id} no es válida para detectar el damero: {exc}"
             ) from exc
-        if not found or corners is None:
-            raise RailGeometryError(f"No se detectó completo el tablero en {image_id}.")
-        refined = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), termination)
-        point_observations.append((float(position), refined, str(image_id)))
+        if not detection.found or detection.corners is None:
+            raise RailGeometryError(
+                f"No se detectó completo el tablero en {image_id}; "
+                f"{detection.diagnostic_summary}"
+            )
+        point_observations.append((float(position), detection.corners, str(image_id)))
     return estimate_rail_reference_from_observations(
         point_observations, profile, **kwargs  # type: ignore[arg-type]
     )
+
+
+def _warn_square_board_orientation_ambiguity(inner_corners: tuple[int, int]) -> None:
+    """Advierte que un damero cuadrado no fija por sí solo su origen/orientación."""
+
+    if int(inner_corners[0]) == int(inner_corners[1]):
+        warnings.warn(
+            "El damero cuadrado no desambigua el origen ni la orientación entre "
+            "fotografías del rail. Verifique una orientación física consistente o "
+            "use una referencia asimétrica; Fishmeter no invierte coordenadas "
+            "automáticamente.",
+            UserWarning,
+            stacklevel=2,
+        )
 
 
 def build_measurement_plane(

@@ -15,6 +15,7 @@ import numpy as np
 import yaml
 
 from .b_calibration import SUPPORTED_PINHOLE_MODELS
+from ..vision.chessboard_detector import ChessboardInputError, detect_chessboard_corners
 
 
 SCHEMA = "fish_morphometry.air_calibration.v1"
@@ -40,6 +41,9 @@ class AirCalibrationViewReport:
     board_center_normalized: tuple[float, float] | None = None
     board_area_fraction: float | None = None
     tilt_degrees: float | None = None
+    detector_method: str | None = None
+    detected_corner_count: int | None = None
+    detection_time_ms: float | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -56,6 +60,9 @@ class AirCalibrationViewReport:
             ),
             "board_area_fraction": self.board_area_fraction,
             "tilt_degrees": self.tilt_degrees,
+            "detector_method": self.detector_method,
+            "detected_corner_count": self.detected_corner_count,
+            "detection_time_ms": self.detection_time_ms,
         }
 
 
@@ -319,8 +326,6 @@ def calibrate_air_from_images(
     image_points: list[np.ndarray] = []
     reports: list[AirCalibrationViewReport] = []
     accepted_indices: list[int] = []
-    flags = cv2.CALIB_CB_ADAPTIVE_THRESH | cv2.CALIB_CB_NORMALIZE_IMAGE
-    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 40, 0.001)
     for index, source in enumerate(images):
         image_id, image = _read_image(source, index)
         if image is None or image.size == 0:
@@ -333,24 +338,48 @@ def calibrate_air_from_images(
         if actual != expected_resolution:
             reports.append(AirCalibrationViewReport(image_id, False, f"resolución incompatible: {actual[0]}×{actual[1]}"))
             continue
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
         try:
-            found, corners = cv2.findChessboardCorners(gray, (columns, rows), flags=flags)
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
         except cv2.error as exc:
-            reports.append(AirCalibrationViewReport(image_id, False, f"error OpenCV: {exc}"))
-            continue
-        if not found or corners is None or len(corners) != len(objects):
-            reports.append(AirCalibrationViewReport(image_id, False, "tablero no detectado completo"))
+            reports.append(
+                AirCalibrationViewReport(
+                    image_id,
+                    False,
+                    f"imagen ilegible: no se pudo convertir a grises ({exc})",
+                )
+            )
             continue
         try:
-            refined = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), criteria)
-        except cv2.error as exc:
-            reports.append(AirCalibrationViewReport(image_id, False, f"falló refinamiento subpíxel: {exc}"))
+            detection = detect_chessboard_corners(gray, (columns, rows))
+        except ChessboardInputError as exc:
+            reports.append(AirCalibrationViewReport(image_id, False, f"imagen inválida para detección: {exc}"))
             continue
+        if not detection.found:
+            reports.append(
+                AirCalibrationViewReport(
+                    image_id,
+                    False,
+                    (
+                        f"tablero no detectado completo; se esperaban {len(objects)} esquinas; "
+                        f"{detection.diagnostic_summary}"
+                    ),
+                    detection_time_ms=detection.elapsed_ms,
+                )
+            )
+            continue
+        assert detection.corners is not None and detection.method is not None
         object_points.append(objects.copy())
-        image_points.append(refined.astype(np.float32))
+        image_points.append(detection.corners.astype(np.float32))
         accepted_indices.append(len(reports))
-        reports.append(AirCalibrationViewReport(image_id, True))
+        reports.append(
+            AirCalibrationViewReport(
+                image_id,
+                True,
+                detector_method=detection.method,
+                detected_corner_count=detection.corner_count,
+                detection_time_ms=detection.elapsed_ms,
+            )
+        )
     if expected_resolution is None:
         raise AirCalibrationError("No se recibió ninguna imagen legible.", reports=reports)
     if len(object_points) < int(minimum_usable_views):
@@ -556,6 +585,17 @@ def load_air_calibration(path: str | Path) -> AirCalibrationProfile:
                     None
                     if item.get("tilt_degrees") is None
                     else float(item["tilt_degrees"])
+                ),
+                detector_method=None if item.get("detector_method") is None else str(item["detector_method"]),
+                detected_corner_count=(
+                    None
+                    if item.get("detected_corner_count") is None
+                    else int(item["detected_corner_count"])
+                ),
+                detection_time_ms=(
+                    None
+                    if item.get("detection_time_ms") is None
+                    else float(item["detection_time_ms"])
                 ),
             )
             for item in views.get("reports", [])
