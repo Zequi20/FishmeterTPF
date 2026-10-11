@@ -79,6 +79,7 @@ from ..vision.aruco_detector import (
     select_marker,
 )
 from .image_panel import ImagePanel
+from .file_dialog_state import load_last_directory, save_last_directory
 from .results_panel import MethodResultPanel, ResultsPanel
 from .styles import configure_styles
 
@@ -99,6 +100,7 @@ class MainWindow:
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(1, weight=1)
         configure_styles(root)
+        self._last_dialog_directory = load_last_directory()
 
         self.image_bgr: np.ndarray | None = None
         self.image_path: Path | None = None
@@ -199,6 +201,62 @@ class MainWindow:
         self._build()
         self.axis_angle_var.trace_add("write", self._on_axis_angle_changed)
         self._refresh_calculate_states()
+
+    def _dialog_options(self, options: dict[str, object]) -> dict[str, object]:
+        """Añade la carpeta persistida y el padre común a un diálogo Tk."""
+
+        dialog_options = dict(options)
+        dialog_options.setdefault("parent", self.root)
+        if self._last_dialog_directory is not None:
+            if self._last_dialog_directory.is_dir():
+                dialog_options.setdefault("initialdir", str(self._last_dialog_directory))
+            else:
+                self._last_dialog_directory = None
+        return dialog_options
+
+    def _remember_dialog_selection(self, selection: object) -> None:
+        """Actualiza el estado con la carpeta del último archivo seleccionado."""
+
+        if isinstance(selection, (tuple, list)):
+            candidates = selection
+        elif isinstance(selection, str):
+            candidates = (selection,)
+        else:
+            candidates = ()
+        for selected in candidates:
+            if not isinstance(selected, str) or not selected:
+                continue
+            try:
+                selected_path = Path(selected).expanduser()
+                directory = selected_path if selected_path.is_dir() else selected_path.parent
+            except (OSError, RuntimeError, TypeError, ValueError):
+                continue
+            if directory.is_dir():
+                self._last_dialog_directory = directory.resolve()
+                save_last_directory(self._last_dialog_directory)
+                return
+
+    def _askopenfilename(self, **options: object) -> str:
+        path = filedialog.askopenfilename(**self._dialog_options(options))
+        self._remember_dialog_selection(path)
+        return path
+
+    def _askopenfilenames(self, **options: object) -> tuple[str, ...]:
+        paths = filedialog.askopenfilenames(**self._dialog_options(options))
+        self._remember_dialog_selection(paths)
+        if isinstance(paths, str):
+            return (paths,) if paths else ()
+        return tuple(paths)
+
+    def _asksaveasfilename(self, **options: object) -> str:
+        path = filedialog.asksaveasfilename(**self._dialog_options(options))
+        self._remember_dialog_selection(path)
+        return path
+
+    def _askdirectory(self, **options: object) -> str:
+        path = filedialog.askdirectory(**self._dialog_options(options))
+        self._remember_dialog_selection(path)
+        return path
 
     def _build(self) -> None:
         header = ttk.Frame(self.root, style="Header.TFrame", padding=(24, 18, 24, 16))
@@ -1003,7 +1061,7 @@ class MainWindow:
         return card
 
     def _load_b_profile(self) -> None:
-        path = filedialog.askopenfilename(
+        path = self._askopenfilename(
             title="Cargar perfil de calibración B o Calibmar",
             filetypes=(("YAML", "*.yaml *.yml"), ("Todos", "*.*")),
         )
@@ -1081,7 +1139,7 @@ class MainWindow:
         except (TypeError, ValueError) as exc:
             self._show_error(str(exc))
             return
-        paths = filedialog.askopenfilenames(
+        paths = self._askopenfilenames(
             title="Seleccionar al menos 15 vistas del tablero sumergido",
             filetypes=(("Imágenes", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff"), ("Todos", "*.*")),
         )
@@ -1213,7 +1271,7 @@ class MainWindow:
         if not isinstance(payload, BCalibrationProfile):
             return
         profile = payload
-        path = filedialog.asksaveasfilename(
+        path = self._asksaveasfilename(
             title="Guardar perfil B",
             initialfile="calibration_B.yaml",
             defaultextension=".yaml",
@@ -1276,7 +1334,7 @@ class MainWindow:
         log.configure(state="disabled")
 
     def _load_b_reference(self) -> None:
-        path = filedialog.askopenfilename(
+        path = self._askopenfilename(
             title="Cargar referencia geométrica cámara–rail",
             filetypes=(("YAML", "*.yaml *.yml"), ("Todos", "*.*")),
         )
@@ -1360,7 +1418,7 @@ class MainWindow:
         except (TypeError, ValueError) as exc:
             self._show_error(str(exc))
             return
-        paths = filedialog.askopenfilenames(
+        paths = self._askopenfilenames(
             title="Seleccionar al menos dos referencias del tablero en posiciones conocidas",
             filetypes=(("Imágenes", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff"), ("Todos", "*.*")),
         )
@@ -1402,7 +1460,7 @@ class MainWindow:
         except (OSError, cv2.error, RailGeometryError) as exc:
             self._show_error(f"No se pudo crear la referencia cámara–rail: {exc}")
             return
-        output = filedialog.asksaveasfilename(
+        output = self._asksaveasfilename(
             title="Guardar referencia cámara–rail",
             initialfile="rail_reference_B.yaml",
             defaultextension=".yaml",
@@ -1468,7 +1526,7 @@ class MainWindow:
         self._refresh_calculate_states()
 
     def _load_c_air_profile(self) -> None:
-        path = filedialog.askopenfilename(
+        path = self._askopenfilename(
             title="Cargar perfil de calibración en aire",
             filetypes=(("YAML", "*.yaml *.yml"), ("Todos", "*.*")),
         )
@@ -1495,7 +1553,7 @@ class MainWindow:
         except (TypeError, ValueError) as exc:
             self._show_error(str(exc))
             return
-        paths = filedialog.askopenfilenames(
+        paths = self._askopenfilenames(
             title="Seleccionar al menos 15 vistas del tablero en aire",
             filetypes=(("Imágenes", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff"), ("Todos", "*.*")),
         )
@@ -1636,7 +1694,7 @@ class MainWindow:
         if not isinstance(payload, AirCalibrationProfile):
             return
         profile = payload
-        path = filedialog.asksaveasfilename(
+        path = self._asksaveasfilename(
             title="Guardar perfil de calibración en aire",
             initialfile="calibration_C_air.yaml",
             defaultextension=".yaml",
@@ -1719,7 +1777,7 @@ class MainWindow:
         self._refresh_calculate_states()
 
     def _import_c_calibmar(self) -> None:
-        path = filedialog.askopenfilename(
+        path = self._askopenfilename(
             title="Importar YAML Calibmar FLATPORT",
             filetypes=(("YAML", "*.yaml *.yml"), ("Todos", "*.*")),
         )
@@ -1746,7 +1804,7 @@ class MainWindow:
         self.status_var.set(f"Calibmar FLATPORT importado: {Path(path).name}.")
 
     def _load_c_manual_port(self) -> None:
-        path = filedialog.askopenfilename(
+        path = self._askopenfilename(
             title="Cargar parámetros manuales del puerto plano",
             filetypes=(("YAML", "*.yaml *.yml"), ("Todos", "*.*")),
         )
@@ -1811,7 +1869,7 @@ class MainWindow:
         self._refresh_calculate_states()
 
     def _load_c_plane_yaml(self) -> None:
-        path = filedialog.askopenfilename(
+        path = self._askopenfilename(
             title="Cargar plano de medición C",
             filetypes=(("YAML", "*.yaml *.yml"), ("Todos", "*.*")),
         )
@@ -2022,7 +2080,7 @@ class MainWindow:
         return missing
 
     def _load_image(self) -> None:
-        path = filedialog.askopenfilename(
+        path = self._askopenfilename(
             title="Seleccionar imagen",
             filetypes=(("Imágenes", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff"), ("Todos", "*.*")),
         )
@@ -2077,7 +2135,7 @@ class MainWindow:
         if self.image_bgr is None:
             self._show_error("Cargue una imagen antes de cargar puntos.")
             return
-        path = filedialog.askopenfilename(
+        path = self._askopenfilename(
             title="Cargar puntos anatómicos",
             filetypes=(("JSON", "*.json"), ("Todos", "*.*")),
         )
@@ -2288,7 +2346,7 @@ class MainWindow:
             self._show_error("Confirme o remarque p3/p4 antes de guardar los puntos.")
             return
         default_name = f"{self.image_path.stem if self.image_path else 'points'}_points.json"
-        path = filedialog.asksaveasfilename(
+        path = self._asksaveasfilename(
             title="Guardar puntos anatómicos",
             initialfile=default_name,
             defaultextension=".json",

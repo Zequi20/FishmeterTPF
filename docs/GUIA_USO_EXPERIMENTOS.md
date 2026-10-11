@@ -83,6 +83,12 @@ No sobrescriba las fotografías originales. Use nombres que relacionen especie
 o modelo, réplica, repetición, método y posición, por ejemplo
 `replica_03_rep_02_z150.png`.
 
+Los selectores de archivos de la aplicación comparten y conservan la última
+carpeta utilizada, incluso después de cerrar y volver a abrir Fishmeter. Esto
+incluye cargar imágenes, seleccionar varias vistas de calibración y guardar
+perfiles o resultados. Si la carpeta ya no está disponible, el diálogo utiliza
+su ubicación normal.
+
 ## 4. Flujo común: imagen, eje y puntos anatómicos
 
 ### 4.1 Campos y controles comunes

@@ -68,6 +68,8 @@ fish-morphometry
 
 La aplicación no requiere imágenes, puntos, configuraciones ni calibraciones para abrirse. La configuración YAML de A/A′ se carga explícitamente desde código; los perfiles y referencias de B se cargan desde su panel y el arranque no depende de ellos.
 
+Los diálogos de abrir, seleccionar y guardar archivos recuerdan la última carpeta utilizada entre sesiones. Si esa carpeta deja de existir, Tkinter vuelve a usar su ubicación predeterminada.
+
 La suite automatizada está organizada en `tests/unit`, `tests/integration` y fixtures sintéticos deterministas en `tests/fixtures`. No requiere cámara, GPU, conexión de red, display ni datos experimentales. Las ramas de calibración que dependen de fotografías reales de tableros se cubren mediante contratos de perfiles y errores; no se presentan como validación física.
 
 ## Flujo de A y A′
