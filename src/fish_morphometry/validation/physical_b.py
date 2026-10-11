@@ -43,6 +43,9 @@ class PhysicalValidationRecord:
     passed: bool | None
     quality_status: str = "PENDING_VALIDATION"
     warnings: tuple[str, ...] = ()
+    rail_scale_norm: float | None = None
+    rail_scale_relative_error: float | None = None
+    rail_scale_check_status: str = "NOT_AVAILABLE"
 
     @property
     def delta_rail_mm(self) -> float:
@@ -64,6 +67,9 @@ class PhysicalValidationRecord:
             "rail_reference_hash": self.rail_reference_hash,
             "replica_plane_offset_mm": self.replica_plane_offset_mm,
             "replica_plane_offset_direction": self.replica_plane_offset_direction,
+            "rail_scale_norm": self.rail_scale_norm,
+            "rail_scale_relative_error": self.rail_scale_relative_error,
+            "rail_scale_check_status": self.rail_scale_check_status,
             "maximum_absolute_error_mm": self.maximum_absolute_error_mm,
             "maximum_percentage_error": self.maximum_percentage_error,
         }
@@ -88,6 +94,9 @@ class PhysicalValidationRecord:
             "rail_reference_hash": self.rail_reference_hash,
             "replica_plane_offset_mm": self.replica_plane_offset_mm,
             "replica_plane_offset_direction": self.replica_plane_offset_direction,
+            "rail_scale_norm": self.rail_scale_norm,
+            "rail_scale_relative_error": self.rail_scale_relative_error,
+            "rail_scale_check_status": self.rail_scale_check_status,
             "maximum_absolute_error_mm": self.maximum_absolute_error_mm,
             "maximum_percentage_error": self.maximum_percentage_error,
             "passed": self.passed,
@@ -174,6 +183,11 @@ def validate_known_segment_b(
     ]
     if not math.isclose(delta_z, 0.0, abs_tol=1e-9):
         warnings.append("La posición está separada de la zona de calibración B.")
+    if rail_reference.rail_scale_check_status == "WARNING":
+        warnings.append(
+            "La referencia B es provisional porque la escala pose/rail excede "
+            "el umbral diagnóstico; esta validación física aporta la evidencia métrica."
+        )
     criteria = []
     if absolute_threshold is not None:
         criteria.append(abs(signed_error) <= absolute_threshold)
@@ -209,6 +223,9 @@ def validate_known_segment_b(
         passed=passed,
         quality_status=quality_status,
         warnings=tuple(warnings),
+        rail_scale_norm=rail_reference.rail_scale_norm,
+        rail_scale_relative_error=rail_reference.rail_scale_relative_error,
+        rail_scale_check_status=rail_reference.rail_scale_check_status,
     )
 
 
@@ -273,6 +290,9 @@ def export_physical_validation(
         "rail_reference_hash",
         "replica_plane_offset_mm",
         "replica_plane_offset_direction",
+        "rail_scale_norm",
+        "rail_scale_relative_error",
+        "rail_scale_check_status",
         "maximum_absolute_error_mm",
         "maximum_percentage_error",
         "passed",

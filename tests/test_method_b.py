@@ -343,6 +343,97 @@ class MethodBTests(unittest.TestCase):
             with self.assertRaisesRegex(RailGeometryError, "hash"):
                 load_rail_reference(path)
 
+    def test_scale_mismatch_creates_provisional_reference_and_can_be_validated(self):
+        profile = _profile()
+        inner_corners = (3, 3)
+        objects = np.zeros((9, 3), np.float32)
+        objects[:, :2] = np.mgrid[0:3, 0:3].T.reshape(-1, 2) * 10.0
+        observations = []
+        scale_norm = 0.9493
+        for position in (90.0, 100.0, 110.0):
+            effective_depth = 100.0 + scale_norm * (position - 100.0)
+            projected, _ = cv2.projectPoints(
+                objects,
+                np.zeros(3),
+                np.array((0.0, 0.0, effective_depth)),
+                profile.K,
+                profile.D,
+            )
+            observations.append((position, projected, f"ref-{position:g}.png"))
+
+        reference = estimate_rail_reference_from_observations(
+            observations,
+            profile,
+            inner_corners=inner_corners,
+            square_size_mm=10,
+            z_ref_mm=100,
+            rail_perpendicular_to_board=True,
+            replica_planes_parallel_to_board=True,
+        )
+
+        self.assertAlmostEqual(reference.rail_scale_norm, scale_norm, places=4)
+        self.assertAlmostEqual(reference.rail_scale_relative_error, -0.0507, places=4)
+        self.assertEqual(reference.rail_scale_check_status, "WARNING")
+        self.assertTrue(reference.is_provisional)
+
+        result = measure_b(
+            "pilot",
+            {
+                "p1": (100.0, 100.0),
+                "p2": (110.0, 100.0),
+                "p3": (100.0, 110.0),
+                "p4": (100.0, 120.0),
+            },
+            profile,
+            reference,
+            100.0,
+            0.0,
+            replica_id="pilot-reference",
+            image_shape=(200, 200, 3),
+        )
+        self.assertEqual(result.quality.status, "PENDING_VALIDATION")
+        self.assertEqual(result.metadata["rail_scale_check_status"], "WARNING")
+        self.assertTrue(any("provisional" in item.lower() for item in result.quality.warnings))
+
+        record = validate_known_segment_b(
+            "pilot-ruler",
+            (100.0, 100.0),
+            (110.0, 100.0),
+            10.0,
+            profile,
+            reference,
+            100.0,
+            maximum_percentage_error=1.0,
+        )
+        self.assertEqual(record.quality_status, "PASS")
+        self.assertEqual(record.rail_scale_check_status, "WARNING")
+        self.assertAlmostEqual(record.rail_scale_norm, scale_norm, places=4)
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "provisional-rail.yaml"
+            save_rail_reference(reference, path)
+            loaded = load_rail_reference(path)
+            self.assertAlmostEqual(loaded.rail_scale_norm, scale_norm, places=4)
+            self.assertEqual(loaded.rail_scale_check_status, "WARNING")
+
+    def test_legacy_reference_hash_without_scale_diagnostic_remains_loadable(self):
+        profile = _profile()
+        reference = _reference(profile)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "legacy-rail.yaml"
+            save_rail_reference(reference, path)
+            payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+            payload["reference_hash"] = reference.legacy_reference_hash
+            payload["rail_fit"].pop("scale_norm")
+            payload["rail_fit"].pop("scale_relative_error")
+            payload["rail_fit"].pop("maximum_scale_relative_error")
+            payload["rail_fit"].pop("scale_check_status")
+            path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+
+            loaded = load_rail_reference(path)
+            self.assertIsNone(loaded.rail_scale_norm)
+            self.assertEqual(loaded.rail_scale_check_status, "NOT_AVAILABLE")
+
     def test_calibmar_opencv_import_and_flatport_rejection(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "calibration.yaml"

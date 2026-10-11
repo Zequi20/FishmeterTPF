@@ -1264,9 +1264,17 @@ class MainWindow:
         self.b_reference_max_normal_spread_var.set(
             f"{reference.maximum_normal_spread_degrees:g}"
         )
+        scale_summary = (
+            "escala pose/rail no disponible"
+            if reference.rail_scale_norm is None
+            else (
+                f"escala pose/rail {reference.rail_scale_norm:.4f} "
+                f"({reference.rail_scale_relative_error * 100:+.2f} %)"
+            )
+        )
         self.b_reference_status_var.set(
-            f"{reference.reference_id} · foto {reference.reference_image_id} · z_ref {reference.z_ref_mm:g} mm · "
-            f"solvePnP {reference.reprojection_error_px:.3f} px · {reference.direction_source}"
+            f"PROVISIONAL · {reference.reference_id} · z_ref {reference.z_ref_mm:g} mm · "
+            f"solvePnP {reference.reprojection_error_px:.3f} px · {scale_summary}"
         )
         self.status_var.set(f"Referencia cámara–rail cargada: {Path(path).name}.")
         self._refresh_calculate_states()
@@ -1357,12 +1365,25 @@ class MainWindow:
         self.b_rail_x_var.set(f"{reference.rail_direction_camera[0]:.8g}")
         self.b_rail_y_var.set(f"{reference.rail_direction_camera[1]:.8g}")
         self.b_rail_z_var.set(f"{reference.rail_direction_camera[2]:.8g}")
+        scale_error = reference.rail_scale_relative_error
         self.b_reference_status_var.set(
-            f"{reference.reference_id} · {len(reference.rail_positions_used_mm)} posiciones · "
-            f"residuo rail {reference.rail_fit_residual_mm:.3f} mm · "
-            f"solvePnP máx. {reference.reprojection_error_px:.3f} px"
+            f"PROVISIONAL · {reference.reference_id} · "
+            f"escala pose/rail {reference.rail_scale_norm:.4f} "
+            f"({scale_error * 100:+.2f} %) · "
+            f"residuo {reference.rail_fit_residual_mm:.3f} mm · "
+            f"solvePnP {reference.reprojection_error_px:.3f} px"
         )
         self.status_var.set(f"Referencia guardada: {Path(output).name}.")
+        if reference.rail_scale_check_status == "WARNING":
+            messagebox.showwarning(
+                "Referencia B provisional",
+                "La referencia fue guardada para pruebas piloto, pero la escala pose/rail "
+                f"tiene norma {reference.rail_scale_norm:.4f} "
+                f"({scale_error * 100:+.2f} % respecto de 1).\n\n"
+                "Los resultados permanecerán PENDING_VALIDATION hasta registrar una "
+                "validación física compatible.",
+                parent=self.root,
+            )
         self._refresh_calculate_states()
 
     # ------------------------------------------------------------------

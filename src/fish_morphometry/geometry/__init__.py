@@ -1,6 +1,7 @@
 """Geometría efectiva en coordenadas de cámara para el método B."""
 
 from .rail_plane import (
+    DEFAULT_RAIL_SCALE_RELATIVE_TOLERANCE,
     RailGeometryError,
     RailPlaneReference,
     build_measurement_plane,
@@ -28,6 +29,7 @@ from .refractive_port import (
 from .snells_law import SnellError, TotalInternalReflectionError, normalize_vector, refract_direction
 
 __all__ = [
+    "DEFAULT_RAIL_SCALE_RELATIVE_TOLERANCE",
     "RailGeometryError",
     "RailPlaneReference",
     "RayPlaneError",

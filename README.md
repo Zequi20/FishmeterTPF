@@ -168,6 +168,14 @@ resultado.
 
 2. **Referencia cámara–rail.** Tome fotografías nuevas del mismo tablero, con la cámara fija, en al menos dos posiciones físicas distintas del rail que abarquen `z_ref_mm`. El ajuste multiposición ejecuta `cv2.solvePnP` en cada imagen, estima la dirección del rail a partir del movimiento observado y calcula el plano en `z_ref_mm`. Se rechaza la referencia si excede el error máximo de reproyección, el residuo máximo del ajuste lineal o la dispersión angular máxima de las normales. Los umbrales, posiciones, residuos, procedencia de la dirección y hashes se conservan. Las referencias heredadas con dirección manual siguen siendo legibles, pero generan una advertencia. Si se declara que el rail es perpendicular al tablero, la dirección se valida; también debe confirmarse explícitamente que los planos de las réplicas permanecen paralelos.
 
+   La norma de la pendiente `dtvec/drail` se conserva como diagnóstico de escala
+   pose/rail. Una desviación superior al 5 % ya no impide crear la referencia:
+   la interfaz la identifica como **PROVISIONAL**, registra la norma y el error
+   relativo, y mantiene los resultados en `PENDING_VALIDATION`. Este diagnóstico
+   no corrige ni reescala silenciosamente la geometría. La aceptación métrica
+   depende de medir tramos físicos conocidos en las posiciones y regiones del
+   encuadre realmente utilizadas.
+
 La misma secuencia de detección se reutiliza al crear la referencia cámara–rail.
 Con un patrón cuadrado (por ejemplo, 4×4 esquinas internas) la imagen no fija por
 sí sola el origen ni la orientación del tablero entre capturas: Fishmeter emite

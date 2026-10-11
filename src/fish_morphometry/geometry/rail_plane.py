@@ -22,6 +22,7 @@ from ..vision.chessboard_detector import ChessboardInputError, detect_chessboard
 
 
 SCHEMA = "fish_morphometry.rail_plane_reference.v1"
+DEFAULT_RAIL_SCALE_RELATIVE_TOLERANCE = 0.05
 
 
 class RailGeometryError(MeasurementError):
@@ -80,14 +81,16 @@ class RailPlaneReference:
     maximum_normal_spread_degrees: float = 1.0
     maximum_reprojection_error_px: float = 1.0
     calibration_context_hash: str | None = None
+    # ``rail_scale_norm`` is the norm of dtvec/drail estimated from the
+    # multiposition observations.  It is deliberately retained as a
+    # diagnostic instead of being silently forced to one.
+    rail_scale_norm: float | None = None
+    maximum_rail_scale_relative_error: float = DEFAULT_RAIL_SCALE_RELATIVE_TOLERANCE
 
     def __post_init__(self) -> None:
         validate_rail_reference(self)
 
-    @property
-    def reference_hash(self) -> str:
-        """Identifica de forma reproducible la geometría que afecta las medidas."""
-
+    def _reference_hash_payload(self, *, include_scale_diagnostic: bool) -> dict[str, object]:
         payload = {
             "reference_id": self.reference_id,
             "reference_image_id": self.reference_image_id,
@@ -114,14 +117,63 @@ class RailPlaneReference:
             "maximum_reprojection_error_px": self.maximum_reprojection_error_px,
             "created_at_utc": self.created_at_utc,
         }
+        if include_scale_diagnostic:
+            payload["rail_scale_norm"] = self.rail_scale_norm
+            payload[
+                "maximum_rail_scale_relative_error"
+            ] = self.maximum_rail_scale_relative_error
+        return payload
+
+    @property
+    def reference_hash(self) -> str:
+        """Identifica de forma reproducible la geometría que afecta las medidas."""
+
+        payload = self._reference_hash_payload(include_scale_diagnostic=True)
         packed = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return hashlib.sha256(packed).hexdigest()
+
+    @property
+    def legacy_reference_hash(self) -> str:
+        """Hash v1 anterior al diagnóstico de escala, solo para cargar archivos existentes."""
+
+        payload = self._reference_hash_payload(include_scale_diagnostic=False)
+        packed = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(packed).hexdigest()
+
+    @property
+    def rail_scale_relative_error(self) -> float | None:
+        """Error firmado de la escala pose/rail respecto de 1 mm/mm."""
+
+        if self.rail_scale_norm is None:
+            return None
+        return float(self.rail_scale_norm - 1.0)
+
+    @property
+    def rail_scale_check_status(self) -> str:
+        """Estado del diagnóstico de escala, sin declararlo validación física."""
+
+        if self.rail_scale_norm is None:
+            return "NOT_AVAILABLE"
+        relative_error = self.rail_scale_relative_error
+        assert relative_error is not None
+        return (
+            "PASS"
+            if abs(relative_error) <= self.maximum_rail_scale_relative_error
+            else "WARNING"
+        )
+
+    @property
+    def is_provisional(self) -> bool:
+        """Indica que la referencia aún requiere validación métrica física."""
+
+        return True
 
     def to_dict(self) -> dict[str, object]:
         return {
             "schema": SCHEMA,
             "reference_id": self.reference_id,
             "reference_hash": self.reference_hash,
+            "metric_validation_status": "PENDING_VALIDATION",
             "reference_image_id": self.reference_image_id,
             "calibration_profile_hash": self.calibration_profile_hash,
             "calibration_context_hash": self.calibration_context_hash,
@@ -151,6 +203,10 @@ class RailPlaneReference:
                 "maximum_residual_mm": self.maximum_rail_fit_residual_mm,
                 "normal_spread_degrees": self.normal_spread_degrees,
                 "maximum_normal_spread_degrees": self.maximum_normal_spread_degrees,
+                "scale_norm": self.rail_scale_norm,
+                "scale_relative_error": self.rail_scale_relative_error,
+                "maximum_scale_relative_error": self.maximum_rail_scale_relative_error,
+                "scale_check_status": self.rail_scale_check_status,
             },
             "created_at_utc": self.created_at_utc,
         }
@@ -211,6 +267,18 @@ def validate_rail_reference(reference: RailPlaneReference) -> None:
     )
     if maximum_fit <= 0 or maximum_spread <= 0 or maximum_spread >= 90:
         raise RailGeometryError("Los umbrales del ajuste del rail no son válidos.")
+    maximum_scale_error = _finite(
+        reference.maximum_rail_scale_relative_error,
+        "La tolerancia relativa de escala del rail",
+    )
+    if maximum_scale_error < 0 or maximum_scale_error >= 1:
+        raise RailGeometryError(
+            "La tolerancia relativa de escala del rail debe estar entre 0 y 1."
+        )
+    if reference.rail_scale_norm is not None:
+        scale_norm = _finite(reference.rail_scale_norm, "La norma de escala pose/rail")
+        if scale_norm <= 0:
+            raise RailGeometryError("La norma de escala pose/rail debe ser positiva.")
     if reference.direction_source == "multi_position_fit":
         if len(reference.rail_positions_used_mm) < 2:
             raise RailGeometryError("El ajuste del rail requiere al menos dos posiciones.")
@@ -341,6 +409,7 @@ def estimate_rail_reference_from_points(
         created_at_utc=datetime.now(timezone.utc).isoformat(),
         maximum_reprojection_error_px=float(maximum_reprojection_error_px),
         calibration_context_hash=profile.calibration_context_hash,
+        rail_scale_norm=None,
     )
 
 
@@ -358,6 +427,7 @@ def estimate_rail_reference_from_observations(
     maximum_reprojection_error_px: float = 1.0,
     maximum_rail_fit_residual_mm: float = 1.0,
     maximum_normal_spread_degrees: float = 1.0,
+    maximum_rail_scale_relative_error: float = DEFAULT_RAIL_SCALE_RELATIVE_TOLERANCE,
 ) -> RailPlaneReference:
     """Ajusta dirección y plano del rail desde dos o más posiciones conocidas."""
 
@@ -379,7 +449,18 @@ def estimate_rail_reference_from_observations(
     max_spread = _finite(
         maximum_normal_spread_degrees, "La máxima dispersión de normales"
     )
-    if max_reprojection <= 0 or max_fit <= 0 or max_spread <= 0 or max_spread >= 90:
+    max_scale_error = _finite(
+        maximum_rail_scale_relative_error,
+        "La tolerancia relativa de escala del rail",
+    )
+    if (
+        max_reprojection <= 0
+        or max_fit <= 0
+        or max_spread <= 0
+        or max_spread >= 90
+        or max_scale_error < 0
+        or max_scale_error >= 1
+    ):
         raise RailGeometryError("Los umbrales de referencia cámara–rail no son válidos.")
 
     objects = _board_points((columns, rows), square)
@@ -418,11 +499,6 @@ def estimate_rail_reference_from_observations(
     direction_norm = float(np.linalg.norm(direction_raw))
     if not math.isfinite(direction_norm) or direction_norm <= 0:
         raise RailGeometryError("No se pudo estimar una dirección de rail no nula.")
-    if not math.isclose(direction_norm, 1.0, rel_tol=0.05, abs_tol=0.05):
-        raise RailGeometryError(
-            "El desplazamiento pose/rail no conserva la escala métrica esperada; "
-            f"la pendiente tiene norma {direction_norm:.4f}."
-        )
     direction = direction_raw / direction_norm
     predicted = design @ coefficients
     fit_residual = float(
@@ -473,6 +549,8 @@ def estimate_rail_reference_from_observations(
         maximum_normal_spread_degrees=max_spread,
         maximum_reprojection_error_px=max_reprojection,
         calibration_context_hash=profile.calibration_context_hash,
+        rail_scale_norm=direction_norm,
+        maximum_rail_scale_relative_error=max_scale_error,
     )
 
 
@@ -674,10 +752,25 @@ def load_rail_reference(path: str | Path) -> RailPlaneReference:
             maximum_reprojection_error_px=float(
                 pose.get("maximum_reprojection_error_px", 1.0)
             ),
+            rail_scale_norm=(
+                None
+                if rail_fit.get("scale_norm") is None
+                else float(rail_fit["scale_norm"])
+            ),
+            maximum_rail_scale_relative_error=float(
+                rail_fit.get(
+                    "maximum_scale_relative_error",
+                    DEFAULT_RAIL_SCALE_RELATIVE_TOLERANCE,
+                )
+            ),
         )
         stored_hash = payload.get("reference_hash")
-        if stored_hash is not None and str(stored_hash) != reference.reference_hash:
-            raise RailGeometryError("El hash de la referencia cámara–rail no coincide.")
+        if stored_hash is not None:
+            accepted_hashes = {reference.reference_hash}
+            if "scale_norm" not in rail_fit:
+                accepted_hashes.add(reference.legacy_reference_hash)
+            if str(stored_hash) not in accepted_hashes:
+                raise RailGeometryError("El hash de la referencia cámara–rail no coincide.")
         return reference
     except RailGeometryError:
         raise
@@ -691,6 +784,7 @@ create_rail_reference_from_image = estimate_rail_reference_from_image
 
 
 __all__ = [
+    "DEFAULT_RAIL_SCALE_RELATIVE_TOLERANCE",
     "RailGeometryError",
     "RailPlaneReference",
     "SCHEMA",

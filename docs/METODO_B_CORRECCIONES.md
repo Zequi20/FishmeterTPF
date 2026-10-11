@@ -36,6 +36,15 @@ posiciones físicas distintas que abarquen `z_ref_mm`. El ajuste verifica:
 - coherencia angular de las normales del tablero;
 - escala del desplazamiento observado respecto del desplazamiento del rail.
 
+La comprobación de escala es diagnóstica. El ajuste conserva la norma de
+`dtvec/drail` y su diferencia relativa respecto de `1 mm/mm`. Una diferencia
+superior al umbral inicial del 5 % no invalida por sí sola la calibración B ni
+impide crear la referencia, porque `K_B,D_B` representan un modelo pinhole
+efectivo a través del medio. La referencia se muestra como provisional y las
+mediciones continúan en `PENDING_VALIDATION` hasta contrastarlas con longitudes
+físicas conocidas. La dirección usada para trasladar el plano sigue siendo
+unitaria; el factor observado no se aplica como corrección métrica silenciosa.
+
 El offset al plano de simetría tiene una dirección explícita: `rail` o
 `plane_normal`. `delta_z_mm` se conserva por compatibilidad en los archivos,
 pero su nombre inequívoco es `delta_rail_mm`.
@@ -55,6 +64,11 @@ Un resultado B nuevo queda `PENDING_VALIDATION`. El RMS o encontrarse en
 `PASS` o `FAIL` solamente al compararse con los umbrales configurados. El
 registro solo puede asociarse al resultado si coinciden perfil, contexto,
 referencia, posición y offset.
+
+Los registros de validación conservan también la norma, el error relativo y el
+estado del diagnóstico de escala de la referencia. Un `PASS` demuestra el tramo
+y contexto comprobados; no convierte automáticamente todas las posiciones y
+regiones del experimento en validadas.
 
 ## Limitación restante
 

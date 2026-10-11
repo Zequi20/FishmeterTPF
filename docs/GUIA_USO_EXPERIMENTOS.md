@@ -360,6 +360,12 @@ asimétrica si la correspondencia entre posiciones es esencial.
 No edite la dirección estimada a mano. Si el ajuste supera cualquiera de los
 umbrales, revise posiciones, rigidez, detección o montaje.
 
+La norma de escala pose/rail se informa aparte como diagnóstico. Si se aparta
+más del 5 % de `1 mm/mm`, la referencia se guarda como **PROVISIONAL** para
+pruebas piloto; no se corrige ni se reescala automáticamente. Los resultados B
+siguen en `PENDING_VALIDATION` hasta registrar tramos conocidos en las
+posiciones y regiones del encuadre utilizadas.
+
 ### 7.5 Parte 3: campos de captura y réplica
 
 | Campo | Significado | Cómo completarlo |

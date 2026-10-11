@@ -46,6 +46,19 @@ def _quality_warnings(
             "La referencia del rail es heredada y no enlaza el contexto completo "
             "de calibración; regenérela para trazabilidad plena."
         )
+    if rail_reference.rail_scale_check_status == "WARNING":
+        scale_error = rail_reference.rail_scale_relative_error
+        assert scale_error is not None and rail_reference.rail_scale_norm is not None
+        warnings.append(
+            "Referencia B provisional — pendiente de validación métrica: "
+            f"la escala pose/rail tiene norma {rail_reference.rail_scale_norm:.4f} "
+            f"({scale_error * 100:+.2f} % respecto de 1)."
+        )
+    elif rail_reference.rail_scale_check_status == "NOT_AVAILABLE":
+        warnings.append(
+            "La referencia B no conserva un diagnóstico de escala pose/rail; "
+            "permanece provisional hasta validarla físicamente."
+        )
     if not math.isclose(delta_z_mm, 0.0, abs_tol=1e-9):
         warnings.append(
             f"La captura está separada {delta_z_mm:+.3f} mm de la zona de calibración; "
@@ -202,6 +215,13 @@ def measure_b(
             "rail_positions_used_mm": list(rail_reference.rail_positions_used_mm),
             "rail_fit_residual_mm": rail_reference.rail_fit_residual_mm,
             "rail_normal_spread_degrees": rail_reference.normal_spread_degrees,
+            "rail_scale_norm": rail_reference.rail_scale_norm,
+            "rail_scale_relative_error": rail_reference.rail_scale_relative_error,
+            "rail_scale_check_status": rail_reference.rail_scale_check_status,
+            "maximum_rail_scale_relative_error": (
+                rail_reference.maximum_rail_scale_relative_error
+            ),
+            "rail_reference_metric_validation_status": "PENDING_VALIDATION",
             "rail_positive_direction": rail_reference.positive_direction,
             "reference_image_id": rail_reference.reference_image_id,
             "reference_reprojection_error_px": rail_reference.reprojection_error_px,
