@@ -462,8 +462,14 @@ Procedimiento:
 3. Tome al menos 15 vistas utilizables del damero, con posiciones e
    inclinaciones variadas.
 4. Complete esquinas, tamaño y unidad.
-5. Pulse **Crear con tablero…**, seleccione las vistas y guarde
-   `calibration_C_air.yaml`.
+5. Pulse **Crear con tablero…** y seleccione las vistas. La calibración se
+   ejecuta en segundo plano; la barra y el **Log de calibración C · aire**
+   muestran el archivo procesado, detección, resolución, errores por vista,
+   iteraciones de ajuste y comprobaciones de diversidad. La barra inferior solo
+   conserva un resumen corto y no se utiliza para listar todos los rechazos.
+6. Cuando el ajuste termine, guarde `calibration_C_air.yaml`. Si falla, revise
+   el log desplazable dentro de la pestaña C; el diálogo final contiene solo un
+   resumen para no ocultar ni bloquear la interfaz con una lista extensa.
 
 La calibración en aire utiliza exactamente la misma secuencia de detección que
 B, incluida la información del método y del tiempo de cada detección.

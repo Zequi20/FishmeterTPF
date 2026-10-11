@@ -3,13 +3,13 @@
 from .b_calibration import (
     BCalibrationProfile,
     CalibrationError,
-    CalibrationProgress,
     CalibrationViewReport,
     calibrate_b,
     calibrate_b_from_images,
     load_b_calibration,
     save_b_calibration,
 )
+from .progress import CalibrationProgress
 from .air_calibration import (
     AirCalibrationError,
     AirCalibrationProfile,

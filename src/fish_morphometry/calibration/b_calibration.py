@@ -12,7 +12,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
-from typing import Any, Callable, Iterable, Literal, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
 import cv2
 import numpy as np
@@ -22,6 +22,7 @@ from ..vision.chessboard_detector import (
     ChessboardInputError,
     detect_chessboard_corners,
 )
+from .progress import CalibrationProgress
 
 
 SCHEMA = "fish_morphometry.b_calibration.v1"
@@ -42,23 +43,6 @@ class CalibrationError(ValueError):
     def __init__(self, message: str, *, reports: Sequence["CalibrationViewReport"] = ()):
         super().__init__(message)
         self.reports = tuple(reports)
-
-
-@dataclass(frozen=True)
-class CalibrationProgress:
-    """Evento de diagnóstico emitido durante una calibración B.
-
-    El callback que recibe estos eventos puede ejecutarse desde un hilo de
-    trabajo. Por ello, una interfaz gráfica debe reenviarlos al hilo principal
-    antes de modificar widgets.
-    """
-
-    stage: str
-    message: str
-    level: Literal["info", "success", "warning", "error"] = "info"
-    current: int | None = None
-    total: int | None = None
-    image_id: str | None = None
 
 
 @dataclass(frozen=True)

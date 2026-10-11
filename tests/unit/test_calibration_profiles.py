@@ -202,6 +202,7 @@ def test_air_calibration_rejects_high_error_view_and_keeps_diverse_set(monkeypat
         air_calibration.cv2, "cornerSubPix", lambda _gray, corners, *_args: corners
     )
     monkeypatch.setattr(air_calibration.cv2, "calibrateCameraExtended", fake_calibrate)
+    progress: list[CalibrationProgress] = []
     profile = calibrate_air_from_images(
         [np.zeros((200, 200), dtype=np.uint8) for _ in centers],
         inner_corners=(3, 3),
@@ -212,6 +213,7 @@ def test_air_calibration_rejects_high_error_view_and_keeps_diverse_set(monkeypat
         maximum_per_view_error_px=1.5,
         minimum_center_span_fraction=0.2,
         minimum_tilt_span_degrees=10,
+        progress_callback=progress.append,
     )
     assert calibration_calls == 2
     assert profile.views_received == 16
@@ -229,6 +231,11 @@ def test_air_calibration_rejects_high_error_view_and_keeps_diverse_set(monkeypat
         for report in profile.view_reports
         if report.accepted
     )
+    assert progress[0].stage == "start"
+    assert progress[-1].stage == "complete"
+    assert sum(event.stage == "image_accepted" for event in progress) == 16
+    assert sum(event.stage == "fit_result" for event in progress) == 2
+    assert sum(event.stage == "outlier_rejected" for event in progress) == 1
 
 
 def test_b_calibration_rejects_high_error_view_and_keeps_diverse_set(monkeypatch):

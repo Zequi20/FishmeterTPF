@@ -26,11 +26,11 @@ from ..calibration.calibmar_flatport import CalibmarFlatPortError, import_calibm
 from ..calibration.b_calibration import (
     BCalibrationProfile,
     CalibrationError,
-    CalibrationProgress,
     calibrate_b_from_images,
     load_b_calibration,
     save_b_calibration,
 )
+from ..calibration.progress import CalibrationProgress
 from ..calibration.calibmar_pinhole_import import import_calibmar_pinhole
 from ..geometry.rail_plane import (
     RailGeometryError,
@@ -191,6 +191,10 @@ class MainWindow:
         self.depth_candidate_status_var = tk.StringVar(value="Sin candidatas guardadas.")
         self._b_calibration_active = False
         self._b_calibration_events: queue.Queue[tuple[str, object]] = queue.Queue()
+        self.c_air_calibration_progress_var = tk.DoubleVar(value=0.0)
+        self.c_air_calibration_progress_text_var = tk.StringVar(value="Calibración inactiva.")
+        self._c_air_calibration_active = False
+        self._c_air_calibration_events: queue.Queue[tuple[str, object]] = queue.Queue()
 
         self._build()
         self.axis_angle_var.trace_add("write", self._on_axis_angle_changed)
@@ -837,7 +841,10 @@ class MainWindow:
         ttk.Button(card, text="Cargar perfil aire", style="Action.TButton", command=self._load_c_air_profile).grid(
             row=3, column=0, columnspan=2, sticky="ew", pady=(6, 0), padx=(0, 4)
         )
-        ttk.Button(card, text="Crear con tablero…", style="Action.TButton", command=self._create_c_air_profile).grid(
+        self.create_c_air_profile_button = ttk.Button(
+            card, text="Crear con tablero…", style="Action.TButton", command=self._create_c_air_profile
+        )
+        self.create_c_air_profile_button.grid(
             row=3, column=2, columnspan=2, sticky="ew", pady=(6, 0), padx=(4, 0)
         )
         ttk.Label(card, textvariable=self.c_air_profile_status_var, style="CardMuted.TLabel", wraplength=430).grid(
@@ -939,6 +946,53 @@ class MainWindow:
         ttk.Button(card, text="Cargar plano YAML…", style="Action.TButton", command=self._load_c_plane_yaml).grid(
             row=29, column=2, columnspan=2, sticky="ew", pady=(5, 0), padx=(4, 0)
         )
+
+        ttk.Separator(card, orient="horizontal").grid(row=30, column=0, columnspan=4, sticky="ew", pady=(10, 8))
+        ttk.Label(card, text="Log de calibración C · aire", style="CardTitle.TLabel").grid(
+            row=31, column=0, columnspan=2, sticky="w"
+        )
+        ttk.Button(card, text="Limpiar log", command=self._clear_c_air_calibration_log).grid(
+            row=31, column=2, columnspan=2, sticky="e"
+        )
+        c_progress_frame = ttk.Frame(card, style="Card.TFrame")
+        c_progress_frame.grid(row=32, column=0, columnspan=4, sticky="ew", pady=(6, 0))
+        c_progress_frame.columnconfigure(0, weight=1)
+        ttk.Progressbar(
+            c_progress_frame,
+            variable=self.c_air_calibration_progress_var,
+            maximum=100.0,
+            mode="determinate",
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        ttk.Label(
+            c_progress_frame,
+            textvariable=self.c_air_calibration_progress_text_var,
+            style="CardMuted.TLabel",
+        ).grid(row=0, column=1, sticky="e")
+        c_log_frame = ttk.Frame(card, style="Card.TFrame")
+        c_log_frame.grid(row=33, column=0, columnspan=4, sticky="nsew", pady=(6, 0))
+        c_log_frame.columnconfigure(0, weight=1)
+        c_log_frame.rowconfigure(0, weight=1)
+        self.c_air_calibration_log = tk.Text(
+            c_log_frame,
+            height=11,
+            wrap="word",
+            state="disabled",
+            background="#111827",
+            foreground="#d1d5db",
+            insertbackground="#f9fafb",
+            borderwidth=0,
+            padx=8,
+            pady=7,
+            font=("TkFixedFont", 9),
+        )
+        self.c_air_calibration_log.grid(row=0, column=0, sticky="nsew")
+        c_log_scrollbar = ttk.Scrollbar(c_log_frame, orient="vertical", command=self.c_air_calibration_log.yview)
+        c_log_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.c_air_calibration_log.configure(yscrollcommand=c_log_scrollbar.set)
+        self.c_air_calibration_log.tag_configure("success", foreground="#86efac")
+        self.c_air_calibration_log.tag_configure("warning", foreground="#fde68a")
+        self.c_air_calibration_log.tag_configure("error", foreground="#fca5a5")
+        self.c_air_calibration_log.tag_configure("info", foreground="#d1d5db")
         for variable in (
             self.c_replica_var, self.c_repetition_var, self.c_position_var,
             self.c_d_var, self.c_t_var, self.c_nx_var, self.c_ny_var, self.c_nz_var,
@@ -1428,6 +1482,9 @@ class MainWindow:
         self._set_c_air_profile(profile, path_label=Path(path).name)
 
     def _create_c_air_profile(self) -> None:
+        if self._c_air_calibration_active:
+            self.status_var.set("Ya hay una calibración C en aire en curso.")
+            return
         try:
             columns = int(self.c_cols_var.get())
             rows = int(self.c_rows_var.get())
@@ -1444,26 +1501,133 @@ class MainWindow:
         )
         if not paths:
             return
+        self._clear_c_air_calibration_log()
+        self._c_air_calibration_events = queue.Queue()
+        events = self._c_air_calibration_events
+        self._c_air_calibration_active = True
+        self.create_c_air_profile_button.configure(state="disabled")
+        self.c_air_calibration_progress_var.set(0.0)
+        self.c_air_calibration_progress_text_var.set(f"0/{len(paths)} imágenes")
+        self.c_air_profile_status_var.set("Calibración C en aire en curso; consulte el log.")
+        self.status_var.set("Calibración C en aire en segundo plano… la interfaz sigue disponible.")
+        settings = {
+            "inner_corners": (columns, rows),
+            "square_size": square,
+            "units": units,
+            "resolution": None,
+            "profile_id": "C-air",
+            "minimum_usable_views": 15,
+        }
+        worker = threading.Thread(
+            target=self._run_c_air_calibration_worker,
+            args=(tuple(paths), settings, events),
+            name="fishmeter-calibration-c-air",
+            daemon=True,
+        )
+        worker.start()
+        self.root.after(50, lambda: self._poll_c_air_calibration_events(events))
+
+    def _run_c_air_calibration_worker(
+        self,
+        paths: tuple[str, ...],
+        settings: dict[str, object],
+        events: queue.Queue[tuple[str, object]],
+    ) -> None:
+        """Ejecuta la calibración de aire fuera del hilo de Tk."""
+
         try:
             profile = calibrate_air_from_images(
                 paths,
-                inner_corners=(columns, rows),
-                square_size=square,
-                units=units,
-                resolution=None,
-                profile_id="C-air",
-                minimum_usable_views=15,
+                **settings,
+                progress_callback=lambda event: events.put(("progress", event)),
             )
         except AirCalibrationError as exc:
-            rejected = ""
-            if exc.reports:
-                rejected = "\n" + "\n".join(
-                    f"- {report.image_id}: {report.rejection_reason}"
-                    for report in exc.reports
-                    if not report.accepted
-                )
-            self._show_error(f"No se pudo calibrar la cámara en aire: {exc}{rejected}")
+            events.put(("calibration_error", exc))
+        except Exception as exc:  # El hilo debe devolver errores inesperados a la UI.
+            events.put(("unexpected_error", exc))
+        else:
+            events.put(("success", profile))
+
+    def _poll_c_air_calibration_events(
+        self, events: queue.Queue[tuple[str, object]]
+    ) -> None:
+        """Consume eventos de C en el hilo principal sin bloquear la ventana."""
+
+        if events is not self._c_air_calibration_events:
             return
+        terminal: tuple[str, object] | None = None
+        while True:
+            try:
+                event_type, payload = events.get_nowait()
+            except queue.Empty:
+                break
+            if event_type == "progress":
+                self._handle_c_air_calibration_progress(payload)
+            else:
+                terminal = (event_type, payload)
+
+        if terminal is None:
+            self.root.after(75, lambda: self._poll_c_air_calibration_events(events))
+            return
+
+        self._c_air_calibration_active = False
+        self.create_c_air_profile_button.configure(state="normal")
+        event_type, payload = terminal
+        if event_type == "success":
+            self._finish_c_air_profile_creation(payload)
+        elif event_type == "calibration_error":
+            self._finish_c_air_calibration_error(payload)
+        else:
+            self._append_c_air_calibration_log(
+                "error", f"Error interno inesperado: {type(payload).__name__}: {payload}"
+            )
+            self.c_air_profile_status_var.set("La calibración C en aire falló por un error interno.")
+            self.c_air_calibration_progress_text_var.set("Error")
+            self.status_var.set("La calibración C en aire terminó con un error; consulte el log.")
+            self._show_error(f"Error interno durante la calibración C en aire: {payload}")
+
+    def _handle_c_air_calibration_progress(self, payload: object) -> None:
+        if not isinstance(payload, CalibrationProgress):
+            return
+        if payload.stage == "complete":
+            self.c_air_calibration_progress_var.set(100.0)
+            self.c_air_calibration_progress_text_var.set("Completada")
+        elif payload.current is not None and payload.total:
+            self.c_air_calibration_progress_var.set(100.0 * payload.current / payload.total)
+            self.c_air_calibration_progress_text_var.set(
+                f"{payload.current}/{payload.total} imágenes"
+            )
+        elif payload.stage.startswith("fit"):
+            self.c_air_calibration_progress_text_var.set("Ajustando cámara…")
+        elif payload.stage == "diversity":
+            self.c_air_calibration_progress_text_var.set("Verificando diversidad…")
+
+        image_prefix = f"[{payload.image_id}] " if payload.image_id else ""
+        self._append_c_air_calibration_log(
+            payload.level, f"{image_prefix}{payload.message}"
+        )
+
+    def _finish_c_air_calibration_error(self, payload: object) -> None:
+        if not isinstance(payload, AirCalibrationError):
+            return
+        rejected_count = sum(not report.accepted for report in payload.reports)
+        self._append_c_air_calibration_log("error", f"Calibración detenida: {payload}")
+        if payload.reports:
+            self._append_c_air_calibration_log(
+                "info", f"Resumen final: {rejected_count} vistas rechazadas; revise las líneas por imagen anteriores."
+            )
+        self.c_air_profile_status_var.set("No se pudo crear la calibración C en aire; revise el log.")
+        self.c_air_calibration_progress_text_var.set("Falló")
+        self.status_var.set("La calibración C en aire falló; el detalle quedó en el log.")
+        self._show_error(
+            f"No se pudo calibrar la cámara en aire: {payload}\n\n"
+            f"Vistas rechazadas: {rejected_count}. Consulte el log de calibración C."
+        )
+
+    def _finish_c_air_profile_creation(self, payload: object) -> None:
+        if not isinstance(payload, AirCalibrationProfile):
+            return
+        profile = payload
         path = filedialog.asksaveasfilename(
             title="Guardar perfil de calibración en aire",
             initialfile="calibration_C_air.yaml",
@@ -1471,14 +1635,52 @@ class MainWindow:
             filetypes=(("YAML", "*.yaml"), ("Todos", "*.*")),
         )
         if not path:
+            self._append_c_air_calibration_log(
+                "warning", "Perfil calculado, pero no guardado ni aplicado a la sesión."
+            )
+            self.c_air_profile_status_var.set("Perfil C calculado pero no guardado.")
+            self.status_var.set("La calibración C terminó; se canceló el guardado del perfil.")
             return
         try:
             save_air_calibration(profile, path)
-        except OSError as exc:
-            self._show_error(f"No se pudo guardar el perfil de aire: {exc}")
+        except (OSError, AirCalibrationError) as exc:
+            self._append_c_air_calibration_log("error", f"No se pudo guardar el perfil: {exc}")
+            self.c_air_profile_status_var.set("Perfil C calculado, pero no se pudo guardar.")
+            self.c_air_calibration_progress_text_var.set("Guardado fallido")
+            self.status_var.set("La calibración C terminó, pero falló el guardado del perfil.")
+            self._show_error(f"No se pudo guardar el perfil C: {exc}")
             return
         self._set_c_air_profile(profile, path_label=Path(path).name)
-        self.status_var.set(f"Perfil de aire guardado: {Path(path).name}.")
+        self._append_c_air_calibration_log(
+            "success", f"Perfil guardado en {path}; hash {profile.profile_hash[:12]}."
+        )
+        self.status_var.set(f"Perfil C en aire guardado: {Path(path).name}.")
+        self._refresh_calculate_states()
+
+    def _clear_c_air_calibration_log(self) -> None:
+        log = getattr(self, "c_air_calibration_log", None)
+        if log is None:
+            return
+        log.configure(state="normal")
+        log.delete("1.0", "end")
+        log.configure(state="disabled")
+
+    def _append_c_air_calibration_log(self, level: str, message: str) -> None:
+        log = getattr(self, "c_air_calibration_log", None)
+        if log is None:
+            return
+        labels = {
+            "info": "INFO",
+            "success": "OK",
+            "warning": "AVISO",
+            "error": "ERROR",
+        }
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        tag = level if level in labels else "info"
+        log.configure(state="normal")
+        log.insert("end", f"{timestamp} {labels[tag]}  {message}\n", tag)
+        log.see("end")
+        log.configure(state="disabled")
 
     def _set_c_port(self, port: FlatPortParameters, *, path_label: str | None = None) -> None:
         self.c_flat_port = port

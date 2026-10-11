@@ -8,13 +8,14 @@ import hashlib
 import json
 import math
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Literal, Sequence
 
 import cv2
 import numpy as np
 import yaml
 
 from .b_calibration import SUPPORTED_PINHOLE_MODELS
+from .progress import CalibrationProgress
 from ..vision.chessboard_detector import ChessboardInputError, detect_chessboard_corners
 
 
@@ -293,8 +294,30 @@ def calibrate_air_from_images(
     maximum_per_view_error_px: float = 1.5,
     minimum_center_span_fraction: float = 0.20,
     minimum_tilt_span_degrees: float = 10.0,
+    progress_callback: Callable[[CalibrationProgress], None] | None = None,
 ) -> AirCalibrationProfile:
     """Calibra K_air/D_air y rechaza vistas o conjuntos geométricamente débiles."""
+
+    def emit(
+        stage: str,
+        message: str,
+        *,
+        level: Literal["info", "success", "warning", "error"] = "info",
+        current: int | None = None,
+        total: int | None = None,
+        image_id: str | None = None,
+    ) -> None:
+        if progress_callback is not None:
+            progress_callback(
+                CalibrationProgress(
+                    stage=stage,
+                    message=message,
+                    level=level,
+                    current=current,
+                    total=total,
+                    image_id=image_id,
+                )
+            )
 
     columns, rows = int(inner_corners[0]), int(inner_corners[1])
     scale = unit_scale_to_mm(units)
@@ -322,21 +345,35 @@ def calibrate_air_from_images(
     if expected_resolution is not None and any(value <= 0 for value in expected_resolution):
         raise AirCalibrationError("La resolución configurada debe ser positiva.")
     objects = _object_points((columns, rows), square_mm)
+    image_sources = list(images)
+    total_images = len(image_sources)
+    emit(
+        "start",
+        (
+            f"Inicio con {total_images} imágenes; patrón {columns}×{rows} esquinas internas "
+            f"y cuadro {square_mm:g} mm."
+        ),
+        total=total_images,
+    )
     object_points: list[np.ndarray] = []
     image_points: list[np.ndarray] = []
     reports: list[AirCalibrationViewReport] = []
     accepted_indices: list[int] = []
-    for index, source in enumerate(images):
+    for index, source in enumerate(image_sources):
+        current = index + 1
         image_id, image = _read_image(source, index)
         if image is None or image.size == 0:
             reports.append(AirCalibrationViewReport(image_id, False, "imagen ilegible"))
+            emit("image_rejected", "imagen ilegible", level="warning", current=current, total=total_images, image_id=image_id)
             continue
         height, width = image.shape[:2]
         actual = (width, height)
         if expected_resolution is None:
             expected_resolution = actual
         if actual != expected_resolution:
-            reports.append(AirCalibrationViewReport(image_id, False, f"resolución incompatible: {actual[0]}×{actual[1]}"))
+            reason = f"resolución incompatible: {actual[0]}×{actual[1]}"
+            reports.append(AirCalibrationViewReport(image_id, False, reason))
+            emit("image_rejected", reason, level="warning", current=current, total=total_images, image_id=image_id)
             continue
         try:
             gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
@@ -348,11 +385,14 @@ def calibrate_air_from_images(
                     f"imagen ilegible: no se pudo convertir a grises ({exc})",
                 )
             )
+            emit("image_rejected", "imagen ilegible: no se pudo convertir a grises", level="error", current=current, total=total_images, image_id=image_id)
             continue
         try:
             detection = detect_chessboard_corners(gray, (columns, rows))
         except ChessboardInputError as exc:
-            reports.append(AirCalibrationViewReport(image_id, False, f"imagen inválida para detección: {exc}"))
+            reason = f"imagen inválida para detección: {exc}"
+            reports.append(AirCalibrationViewReport(image_id, False, reason))
+            emit("image_rejected", reason, level="error", current=current, total=total_images, image_id=image_id)
             continue
         if not detection.found:
             reports.append(
@@ -365,6 +405,14 @@ def calibrate_air_from_images(
                     ),
                     detection_time_ms=detection.elapsed_ms,
                 )
+            )
+            emit(
+                "image_rejected",
+                f"tablero no detectado completo; {detection.diagnostic_summary}",
+                level="warning",
+                current=current,
+                total=total_images,
+                image_id=image_id,
             )
             continue
         assert detection.corners is not None and detection.method is not None
@@ -380,9 +428,25 @@ def calibrate_air_from_images(
                 detection_time_ms=detection.elapsed_ms,
             )
         )
+        emit(
+            "image_accepted",
+            f"OK {detection.corner_count}/{len(objects)} esquinas mediante {detection.method}",
+            level="success",
+            current=current,
+            total=total_images,
+            image_id=image_id,
+        )
     if expected_resolution is None:
+        emit("failed", "No se recibió ninguna imagen legible.", level="error")
         raise AirCalibrationError("No se recibió ninguna imagen legible.", reports=reports)
     if len(object_points) < int(minimum_usable_views):
+        emit(
+            "failed",
+            f"Se requieren al menos {minimum_usable_views} vistas utilizables; se aceptaron {len(object_points)}.",
+            level="error",
+            current=total_images,
+            total=total_images,
+        )
         raise AirCalibrationError(
             f"Se requieren al menos {minimum_usable_views} vistas utilizables; se aceptaron {len(object_points)}.",
             reports=reports,
@@ -430,7 +494,20 @@ def calibrate_air_from_images(
                 f"OpenCV no pudo calibrar en aire: {exc}", reports=reports
             ) from exc
 
+    emit(
+        "detection_summary",
+        f"Detección terminada: {len(object_points)} utilizables y {len(reports) - len(object_points)} rechazadas de {len(reports)}.",
+        level="success" if len(object_points) >= int(minimum_usable_views) else "warning",
+        current=total_images,
+        total=total_images,
+    )
+    calibration_iteration = 0
     while True:
+        calibration_iteration += 1
+        emit(
+            "fit_start",
+            f"Ajuste OpenCV {calibration_iteration} con {len(object_points)} vistas utilizables.",
+        )
         rms, matrix, distortion, rvecs, tvecs, errors = run_calibration()
         if len(errors) != len(object_points):
             raise AirCalibrationError(
@@ -442,6 +519,13 @@ def calibrate_air_from_images(
             for index, error in enumerate(errors)
             if not math.isfinite(float(error)) or float(error) > maximum_view_error
         ]
+        finite_errors = errors[np.isfinite(errors)]
+        maximum_error = float(np.max(finite_errors)) if len(finite_errors) else math.inf
+        emit(
+            "fit_result",
+            f"Ajuste {calibration_iteration}: RMS={rms:.4f} px; error máximo por vista={maximum_error:.4f} px; umbral={maximum_view_error:.4f} px.",
+            level="success" if not outliers else "warning",
+        )
         if not outliers:
             break
         outlier_set = set(outliers)
@@ -455,6 +539,12 @@ def calibrate_air_from_images(
                     f"error de reproyección {error:.3f} px > {maximum_view_error:.3f} px"
                 ),
                 reprojection_error_px=error,
+            )
+            emit(
+                "outlier_rejected",
+                f"error de reproyección {error:.3f} px > {maximum_view_error:.3f} px",
+                level="warning",
+                image_id=reports[report_index].image_id,
             )
         if len(object_points) - len(outliers) < int(minimum_usable_views):
             raise AirCalibrationError(
@@ -506,18 +596,28 @@ def calibrate_air_from_images(
         for second in normals[index:]
     )
     if center_span_x < minimum_center_span or center_span_y < minimum_center_span:
+        emit(
+            "diversity",
+            f"Cobertura de centros span=({center_span_x:.3f}, {center_span_y:.3f}); mínimo={minimum_center_span:.3f}.",
+            level="error",
+        )
         raise AirCalibrationError(
             "Las vistas no cubren suficiente diversidad espacial de centros del tablero: "
             f"span=({center_span_x:.3f}, {center_span_y:.3f}), mínimo={minimum_center_span:.3f}.",
             reports=reports,
         )
     if tilt_span < minimum_tilt_span:
+        emit(
+            "diversity",
+            f"Diversidad angular span={tilt_span:.3f}°; mínimo={minimum_tilt_span:.3f}°.",
+            level="error",
+        )
         raise AirCalibrationError(
             "Las vistas no cubren suficiente diversidad de inclinación: "
             f"span={tilt_span:.3f}°, mínimo={minimum_tilt_span:.3f}°.",
             reports=reports,
         )
-    return make_air_calibration_profile(
+    profile = make_air_calibration_profile(
         profile_id=profile_id,
         model="OPENCV",
         camera_matrix=matrix,
@@ -541,6 +641,14 @@ def calibrate_air_from_images(
             "tilt_span_definition": "maximum_pairwise_board_normal_angle",
         },
     )
+    emit(
+        "complete",
+        f"Calibración completada: {profile.views_accepted}/{profile.views_received} vistas aceptadas; RMS={profile.rms_px:.4f} px.",
+        level="success",
+        current=total_images,
+        total=total_images,
+    )
+    return profile
 
 
 def save_air_calibration(profile: AirCalibrationProfile, path: str | Path) -> Path:
