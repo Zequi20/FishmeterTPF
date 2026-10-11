@@ -1614,8 +1614,16 @@ class MainWindow:
         self._append_c_air_calibration_log("error", f"Calibración detenida: {payload}")
         if payload.reports:
             self._append_c_air_calibration_log(
-                "info", f"Resumen final: {rejected_count} vistas rechazadas; revise las líneas por imagen anteriores."
+                "info",
+                f"Resumen final: {len(payload.reports) - rejected_count} aceptadas; "
+                f"{rejected_count} rechazadas; revise el mínimo configurado."
             )
+            for report in payload.reports:
+                if not report.accepted and report.rejection_reason:
+                    self._append_c_air_calibration_log(
+                        "warning",
+                        f"RECHAZO DETALLADO [{report.image_id}]: {report.rejection_reason}",
+                    )
         self.c_air_profile_status_var.set("No se pudo crear la calibración C en aire; revise el log.")
         self.c_air_calibration_progress_text_var.set("Falló")
         self.status_var.set("La calibración C en aire falló; el detalle quedó en el log.")

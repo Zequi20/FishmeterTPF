@@ -351,7 +351,9 @@ def calibrate_air_from_images(
         "start",
         (
             f"Inicio con {total_images} imágenes; patrón {columns}×{rows} esquinas internas "
-            f"y cuadro {square_mm:g} mm."
+            f"y cuadro {square_mm:g} mm; se esperan {len(objects)} esquinas por vista; "
+            f"umbral={maximum_view_error:.3f} px; mínimo={minimum_usable_views} vistas; "
+            f"span mínimo={minimum_center_span:.3f}; inclinación mínima={minimum_tilt_span:.3f}°."
         ),
         total=total_images,
     )
@@ -437,6 +439,13 @@ def calibrate_air_from_images(
             image_id=image_id,
         )
     if expected_resolution is None:
+        emit(
+            "detection_summary",
+            f"No hubo imágenes legibles: {len(reports)} vistas procesadas.",
+            level="error",
+            current=total_images,
+            total=total_images,
+        )
         emit("failed", "No se recibió ninguna imagen legible.", level="error")
         raise AirCalibrationError("No se recibió ninguna imagen legible.", reports=reports)
     if len(object_points) < int(minimum_usable_views):
