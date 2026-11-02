@@ -72,6 +72,8 @@ Los diálogos de abrir, seleccionar y guardar archivos recuerdan la última carp
 
 La suite automatizada está organizada en `tests/unit`, `tests/integration` y fixtures sintéticos deterministas en `tests/fixtures`. No requiere cámara, GPU, conexión de red, display ni datos experimentales. Las ramas de calibración que dependen de fotografías reales de tableros se cubren mediante contratos de perfiles y errores; no se presentan como validación física.
 
+La verificación del trazado refractivo de C frente a la solución analítica de Snell (aire–vidrio–agua, incidencia oblicua, vidrio con espesor) se describe en [`docs/verificacion_refractiva.md`](docs/verificacion_refractiva.md).
+
 ## Flujo de A y A′
 
 1. **Cargar imagen**: selecciona una imagen BGR compatible con OpenCV.
